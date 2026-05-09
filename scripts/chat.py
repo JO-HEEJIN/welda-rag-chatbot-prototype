@@ -122,9 +122,16 @@ def main() -> None:
     components = build_rag_chain(vectorstore, user_profile=profile)
     memory = ConversationManager(max_turns=10)
 
+    print()
+    print("=" * 60)
+    print("준비가 완료되었습니다. 혈당 관리에 대해 질문해 주십시오.")
+    print("예시: '아침에 흰쌀밥 먹어도 되나요?'")
+    print("명령: history (대화 기록)  profile (프로필)  reset (메모리 초기화)  exit (종료)")
+    print("=" * 60)
+
     while True:
         try:
-            question = input(">>> ").strip()
+            question = input("\n>>> ").strip()
         except EOFError:
             break
         if not question:
