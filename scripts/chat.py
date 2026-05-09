@@ -119,7 +119,7 @@ def main() -> None:
         print("[프로필 없이 진행]\n")
 
     vectorstore = load_vector_store(str(persist_dir))
-    chain = build_rag_chain(vectorstore, user_profile=profile)
+    components = build_rag_chain(vectorstore, user_profile=profile)
     memory = ConversationManager(max_turns=10)
 
     while True:
@@ -153,7 +153,7 @@ def main() -> None:
         full_response = ""
         sources: list[str] = []
         for chunk in stream_with_sources(
-            chain, vectorstore, question, memory.get_history()
+            components, question, memory.get_history()
         ):
             if isinstance(chunk, tuple) and chunk[0] == "__sources__":
                 sources = chunk[1]

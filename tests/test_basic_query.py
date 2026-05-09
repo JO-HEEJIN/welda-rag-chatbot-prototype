@@ -1,4 +1,4 @@
-"""Smoke test: vector store loads and chain produces a non-empty response."""
+"""Smoke test: vector store loads and the full chain produces a non-empty answer."""
 
 import sys
 from pathlib import Path
@@ -17,9 +17,16 @@ from src.rag_chain import build_rag_chain, load_vector_store
 )
 def test_basic_query_returns_non_empty_answer() -> None:
     vectorstore = load_vector_store(str(PROJECT_ROOT / "chroma_db"))
-    chain = build_rag_chain(vectorstore)
+    components = build_rag_chain(vectorstore)
 
-    answer = chain.invoke({"question": "혈당이 무엇인가요?", "chat_history": []})
+    result = components.full.invoke(
+        {"question": "혈당이 무엇인가요?", "chat_history": []}
+    )
 
-    assert isinstance(answer, str)
-    assert answer.strip(), "expected non-empty answer from the RAG chain"
+    assert isinstance(result, dict)
+    assert "answer" in result
+    assert isinstance(result["answer"], str)
+    assert result["answer"].strip(), "expected non-empty answer from the RAG chain"
+    assert "sources" in result
+    assert isinstance(result["sources"], list)
+    assert all(isinstance(s, str) for s in result["sources"])

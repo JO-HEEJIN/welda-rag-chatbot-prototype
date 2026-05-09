@@ -4,9 +4,18 @@ Tracing:
     LangSmith tracing is enabled automatically when LANGSMITH_TRACING=true is
     set in .env. All LCEL chain invocations are traced step-by-step at
     https://smith.langchain.com under the project given by LANGSMITH_PROJECT.
+
+Chain split:
+    The pipeline is exposed as ``RAGChainComponents`` with three runnables:
+    ``retrieval`` (single retriever call → state dict), ``generation`` (state
+    dict → streamed answer), and ``full`` (both, returning {"answer", "sources"}).
+    Splitting the chain lets ``stream_with_sources`` invoke retrieval once and
+    only stream tokens from the generation step, eliminating a duplicate
+    embedding/vector lookup that the original implementation incurred.
 """
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from operator import itemgetter
 
 from dotenv import load_dotenv
@@ -16,7 +25,7 @@ from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import Runnable, RunnableLambda
+from langchain_core.runnables import Runnable, RunnableLambda, RunnablePassthrough
 from langchain_huggingface import HuggingFaceEmbeddings
 
 from src.user_profile import UserProfile
@@ -50,6 +59,22 @@ PROMPT_TEMPLATE = """당신은 웰다의 혈당 관리 코치입니다. 사용�
 - 답변은 합쇼체(공식적인 한국어 종결어미: -습니다/-십니다)로 통일하세요. 해요체(-요/-아요/-에요)는 사용하지 마세요"""
 
 
+@dataclass
+class RAGChainComponents:
+    """Three runnables exposed by ``build_rag_chain``.
+
+    - ``retrieval``: ``{"question", "chat_history"}`` -> state dict containing
+      ``retrieved_docs``, ``context``, ``sources``, ``chat_history``,
+      ``user_context``, ``question``. Retriever is invoked exactly once.
+    - ``generation``: state dict -> streamed answer string.
+    - ``full``: end-to-end pipeline returning ``{"answer": str, "sources": list[str]}``.
+    """
+
+    retrieval: Runnable
+    generation: Runnable
+    full: Runnable
+
+
 def load_vector_store(persist_dir: str = "./chroma_db") -> Chroma:
     """Open the existing Chroma collection at ``persist_dir`` for retrieval."""
     embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
@@ -66,6 +91,11 @@ def format_docs(docs: list[Document]) -> str:
         f"[source: {d.metadata.get('source_file', 'unknown')}]\n{d.page_content}"
         for d in docs
     )
+
+
+def extract_sources(docs: list[Document]) -> list[str]:
+    """Sorted unique source filenames from a retriever result."""
+    return sorted({d.metadata.get("source_file", "unknown") for d in docs})
 
 
 def format_chat_history(history: list[BaseMessage] | str | None) -> str:
@@ -90,12 +120,12 @@ def format_chat_history(history: list[BaseMessage] | str | None) -> str:
 def build_rag_chain(
     vectorstore: Chroma,
     user_profile: UserProfile | None = None,
-) -> Runnable:
-    """Compose the LCEL pipeline: retrieval -> prompt -> Claude -> string output.
+) -> RAGChainComponents:
+    """Build the retrieval, generation, and full RAG chains as LCEL Runnables.
 
-    The chain expects ``{"question": str, "chat_history": list[BaseMessage] | str}``
-    as input. ``user_profile`` is fixed at chain construction time; pass ``None``
-    to omit personalization.
+    The chain is split so that the embedding/vector lookup happens exactly once
+    per user question while the LLM response can still be streamed token by
+    token. ``user_profile`` is baked into the prompt at construction time.
     """
     user_context = (
         user_profile.to_prompt_context() if user_profile is not None else "프로필 정보 없음"
@@ -105,38 +135,44 @@ def build_rag_chain(
     prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
     llm = ChatAnthropic(model=LLM_MODEL, temperature=0.3)
 
-    return (
-        {
-            "context": itemgetter("question") | retriever | format_docs,
-            "question": itemgetter("question"),
-            "chat_history": itemgetter("chat_history") | RunnableLambda(format_chat_history),
-            "user_context": RunnableLambda(lambda _: user_context),
-        }
-        | prompt
-        | llm
-        | StrOutputParser()
+    retrieval = RunnablePassthrough.assign(
+        retrieved_docs=itemgetter("question") | retriever,
+    ) | RunnablePassthrough.assign(
+        context=itemgetter("retrieved_docs") | RunnableLambda(format_docs),
+        sources=itemgetter("retrieved_docs") | RunnableLambda(extract_sources),
+        chat_history=itemgetter("chat_history") | RunnableLambda(format_chat_history),
+        user_context=RunnableLambda(lambda _: user_context),
     )
+
+    generation = prompt | llm | StrOutputParser()
+
+    full = retrieval | {
+        "answer": generation,
+        "sources": itemgetter("sources"),
+    }
+
+    return RAGChainComponents(retrieval=retrieval, generation=generation, full=full)
 
 
 def stream_with_sources(
-    chain: Runnable,
-    vectorstore: Chroma,
+    components: RAGChainComponents,
     question: str,
     chat_history: list[BaseMessage] | str | None,
 ) -> Iterator[str | tuple[str, list[str]]]:
-    """Stream the chain's tokens, then emit a final ``("__sources__", [...])``.
+    """Single retrieval, then token streaming with a trailing sources tuple.
 
-    The retriever is called once up front so we can attach source filenames to
-    the response without making the streaming chain itself emit metadata. The
-    extra retriever call is cheap because the chain runs the same retrieval
-    internally; vector lookup time is dominated by embedding the query, which
-    happens twice but is well under 100 ms locally.
+    ``retrieval`` runs once via ``.invoke()`` to materialize the prompt-ready
+    state (retrieved docs, formatted context, sources). ``generation`` then
+    streams Claude's reply token by token off that state. This keeps the
+    embedding/vector lookup to a single call per user question while still
+    delivering progressive output for CLI/UI consumers.
     """
-    retriever = vectorstore.as_retriever(search_kwargs={"k": TOP_K})
-    docs = retriever.invoke(question)
-    sources = sorted({d.metadata.get("source_file", "unknown") for d in docs})
+    state = components.retrieval.invoke(
+        {"question": question, "chat_history": chat_history}
+    )
+    sources = state["sources"]
 
-    for chunk in chain.stream({"question": question, "chat_history": chat_history}):
+    for chunk in components.generation.stream(state):
         yield chunk
 
     yield ("__sources__", sources)
