@@ -19,7 +19,7 @@ def test_basic_query_returns_non_empty_answer() -> None:
     vectorstore = load_vector_store(str(PROJECT_ROOT / "chroma_db"))
     chain = build_rag_chain(vectorstore)
 
-    answer = chain.invoke({"question": "혈당이 무엇인가요?", "user_profile": {}})
+    answer = chain.invoke({"question": "혈당이 무엇인가요?", "chat_history": []})
 
     assert isinstance(answer, str)
     assert answer.strip(), "expected non-empty answer from the RAG chain"

@@ -6,22 +6,30 @@ LangChain LCEL 기반의 헬스케어 도메인 RAG 챗봇 프로토타입입니
 
 대웅제약 디지털헬스AI연구소 LLM 엔지니어 포지션 면접 준비 과정에서, 웰다 도메인 (혈당 관리 기반 다이어트)을 가정한 RAG 시스템을 직접 설계 및 구현하기 위해 만들었습니다.
 
+## Features
+
+- LCEL 기반 RAG 파이프라인
+- 사용자 프로필 기반 개인화 (Pydantic 검증)
+- 멀티턴 대화 메모리 (sliding window, max 10턴)
+- 한국어 도메인 지식 베이스 (혈당 관리)
+- CLI 데모 (프로필 입력, history/reset/profile 명령 지원)
+
 ## Architecture
 
 ```
-사용자 질문
+사용자 질문 + 프로필 + 대화기록
     ↓
 [Retriever (Chroma + BGE-M3)]
     ↓ top-3 chunks
 [Format Docs]
     ↓
-[Prompt Template] ← 사용자 질문 (passthrough)
+[Prompt Template]
     ↓
 [LLM (Claude Sonnet 4.6)]
     ↓
 [Output Parser]
     ↓
-응답
+응답 → 대화 메모리에 저장
 ```
 
 ### Component Details
@@ -50,6 +58,15 @@ python scripts/ingest.py
 
 # 3. 챗봇 실행
 python scripts/chat.py
+# 사용자 프로필을 설정하시겠습니까? (y/n): y
+# 나이(1-120): 32
+# 성별 (1=male, 2=female, 3=other): 2
+# ...
+# >>> 아침에 흰쌀밥 먹어도 되나요?
+# >>> history     (이전 대화 기록 보기)
+# >>> profile     (현재 프로필 보기)
+# >>> reset       (대화 메모리 초기화)
+# >>> exit        (종료)
 
 # 4. 테스트
 pytest tests/
@@ -64,7 +81,7 @@ pytest tests/
 
 ## Status
 
-개발 진행 중 (Block 2 완료: LCEL RAG 파이프라인 + Chroma 인덱스 + CLI 챗봇)
+개발 진행 중 (Block 3 완료: 사용자 프로필 개인화 + 대화 메모리 추가)
 
 ## Disclaimer
 

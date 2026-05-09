@@ -6,10 +6,13 @@ from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import Runnable
+from langchain_core.runnables import Runnable, RunnableLambda
 from langchain_huggingface import HuggingFaceEmbeddings
+
+from src.user_profile import UserProfile
 
 load_dotenv()
 
@@ -18,24 +21,26 @@ COLLECTION_NAME = "welda_knowledge"
 LLM_MODEL = "claude-sonnet-4-6"
 TOP_K = 3
 
-PROMPT_TEMPLATE = """당신은 웰다(Welda)의 혈당 관리 코치입니다. 사용자의 혈당 관련 질문에 대해, 아래에 제공된 컨텍스트만을 근거로 정확하고 친절하게 답변하십시오.
+PROMPT_TEMPLATE = """당신은 웰다의 혈당 관리 코치입니다. 사용자 프로필과 이전 대화를 고려해 답변하세요.
 
-다음 원칙을 지켜주십시오.
-1. 컨텍스트에 없는 사실은 추측하지 말고, 정보가 부족하면 "제공된 정보로는 답변하기 어렵습니다"라고 솔직하게 말하십시오.
-2. 의학적 진단, 약물 조정, 개인의 임상적 의사결정이 필요한 사안이라고 판단되면 답변 끝에 의료진 상담을 권유하는 한 문장을 덧붙이십시오.
-3. 합쇼체로 답변하십시오.
-4. 이모지를 사용하지 마십시오. 강조가 필요한 경우 마크다운 굵게(**텍스트**)나 리스트만 사용하십시오.
+사용자 프로필:
+{user_context}
 
-[사용자 프로필]
-{user_profile}
+이전 대화:
+{chat_history}
 
-[컨텍스트]
+관련 정보:
 {context}
 
-[사용자 질문]
-{question}
+사용자 질문: {question}
 
-답변:"""
+답변 시 주의사항:
+- 사용자 프로필의 의학적 조건과 식이제한을 반드시 고려하세요
+- 이전 대화에서 언급된 내용을 활용하되, 새로운 질문에 집중하세요
+- 의학적 자문이 필요한 사안은 반드시 의료진 상담을 권유하세요
+- 컨텍스트에 없는 사실을 추측하지 마세요
+- 이모지를 사용하지 마세요
+- 답변은 합쇼체(공식적인 한국어 종결어미: -습니다/-십니다)로 통일하세요. 해요체(-요/-아요/-에요)는 사용하지 마세요"""
 
 
 def load_vector_store(persist_dir: str = "./chroma_db") -> Chroma:
@@ -56,12 +61,39 @@ def format_docs(docs: list[Document]) -> str:
     )
 
 
-def build_rag_chain(vectorstore: Chroma) -> Runnable:
+def format_chat_history(history: list[BaseMessage] | str | None) -> str:
+    """Convert a list of LangChain messages into a single prompt-ready string."""
+    if isinstance(history, str):
+        return history if history.strip() else "이전 대화 없음"
+    if not history:
+        return "이전 대화 없음"
+
+    lines: list[str] = []
+    for msg in history:
+        if isinstance(msg, HumanMessage):
+            role = "사용자"
+        elif isinstance(msg, AIMessage):
+            role = "코치"
+        else:
+            role = msg.type
+        lines.append(f"{role}: {msg.content}")
+    return "\n".join(lines)
+
+
+def build_rag_chain(
+    vectorstore: Chroma,
+    user_profile: UserProfile | None = None,
+) -> Runnable:
     """Compose the LCEL pipeline: retrieval -> prompt -> Claude -> string output.
 
-    The chain expects ``{"question": str, "user_profile": dict}`` as input.
-    ``user_profile`` is a placeholder for Block 4 personalization and may be ``{}``.
+    The chain expects ``{"question": str, "chat_history": list[BaseMessage] | str}``
+    as input. ``user_profile`` is fixed at chain construction time; pass ``None``
+    to omit personalization.
     """
+    user_context = (
+        user_profile.to_prompt_context() if user_profile is not None else "프로필 정보 없음"
+    )
+
     retriever = vectorstore.as_retriever(search_kwargs={"k": TOP_K})
     prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
     llm = ChatAnthropic(model=LLM_MODEL, temperature=0.3)
@@ -70,7 +102,8 @@ def build_rag_chain(vectorstore: Chroma) -> Runnable:
         {
             "context": itemgetter("question") | retriever | format_docs,
             "question": itemgetter("question"),
-            "user_profile": itemgetter("user_profile"),
+            "chat_history": itemgetter("chat_history") | RunnableLambda(format_chat_history),
+            "user_context": RunnableLambda(lambda _: user_context),
         }
         | prompt
         | llm
