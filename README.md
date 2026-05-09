@@ -8,18 +8,63 @@ LangChain LCEL 기반의 헬스케어 도메인 RAG 챗봇 프로토타입입니
 
 ## Architecture
 
-[작성 예정 - Block 2에서 추가]
+```
+사용자 질문
+    ↓
+[Retriever (Chroma + BGE-M3)]
+    ↓ top-3 chunks
+[Format Docs]
+    ↓
+[Prompt Template] ← 사용자 질문 (passthrough)
+    ↓
+[LLM (Claude Sonnet 4.6)]
+    ↓
+[Output Parser]
+    ↓
+응답
+```
+
+### Component Details
+
+- **Embedding Model**: BAAI/bge-m3 (다국어, 한국어 retrieval에 적합)
+- **Chunking**: RecursiveCharacterTextSplitter (chunk_size=500, overlap=50)
+- **Vector Store**: Chroma (persistent local storage)
+- **Retrieval**: top-k=3 cosine similarity
+- **LLM**: Claude Sonnet 4.6 via Anthropic API
+- **Orchestration**: LangChain LCEL (pipe operator chains)
+
+### Design Decisions
+
+- **왜 BGE-M3인가**: 다국어 모델 중 한국어 retrieval 성능이 검증된 모델. (Block 5에서 KURE-v1과 비교 평가 예정)
+- **왜 chunk_size=500인가**: 도메인 문서가 짧고 주제별로 구조화되어 있어, 작은 청크로도 의미 단위 보존 가능. 500이면 한국어로 약 300-400자 수준.
+- **왜 LCEL인가**: 파이프 연산자 기반 선언적 구조로 체인 변경/디버깅이 용이. LangSmith 트레이싱과 자연 호환.
+
+### Setup & Run
+
+```bash
+# 1. venv 활성화
+source venv/bin/activate
+
+# 2. 인덱스 빌드 (최초 1회)
+python scripts/ingest.py
+
+# 3. 챗봇 실행
+python scripts/chat.py
+
+# 4. 테스트
+pytest tests/
+```
 
 ## Tech Stack
 
 - LangChain (LCEL)
-- Anthropic Claude (Sonnet 4.5)
+- Anthropic Claude (Sonnet 4.6)
 - Chroma (vector store)
 - BGE-M3 / KURE-v1 (Korean embeddings, 비교 평가 예정)
 
 ## Status
 
-개발 진행 중 (Block 1 완료: 프로젝트 셋업 + 도메인 지식 베이스)
+개발 진행 중 (Block 2 완료: LCEL RAG 파이프라인 + Chroma 인덱스 + CLI 챗봇)
 
 ## Disclaimer
 
