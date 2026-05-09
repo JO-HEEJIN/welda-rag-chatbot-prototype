@@ -9,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.conversation_memory import ConversationManager
-from src.rag_chain import build_rag_chain, load_vector_store
+from src.rag_chain import build_rag_chain, load_vector_store, stream_with_sources
 from src.user_profile import UserProfile
 
 DIET_GOAL_CHOICES = {
@@ -120,7 +120,6 @@ def main() -> None:
 
     vectorstore = load_vector_store(str(persist_dir))
     chain = build_rag_chain(vectorstore, user_profile=profile)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
     memory = ConversationManager(max_turns=10)
 
     while True:
@@ -150,17 +149,22 @@ def main() -> None:
                 print(f"[프로필] {profile.to_prompt_context()}\n")
             continue
 
-        docs = retriever.invoke(question)
-        sources = sorted({d.metadata.get("source_file", "unknown") for d in docs})
+        print()
+        full_response = ""
+        sources: list[str] = []
+        for chunk in stream_with_sources(
+            chain, vectorstore, question, memory.get_history()
+        ):
+            if isinstance(chunk, tuple) and chunk[0] == "__sources__":
+                sources = chunk[1]
+                continue
+            print(chunk, end="", flush=True)
+            full_response += chunk
+        print()
+        print(f"\n참고: {', '.join(sources)}\n")
 
-        answer_text = chain.invoke(
-            {"question": question, "chat_history": memory.get_history()}
-        )
         memory.add_user_message(question)
-        memory.add_ai_message(answer_text)
-
-        print(f"\n{answer_text}\n")
-        print(f"참고: {', '.join(sources)}\n")
+        memory.add_ai_message(full_response)
 
     print("[chat] 대화를 종료합니다. 건강하십시오.")
 

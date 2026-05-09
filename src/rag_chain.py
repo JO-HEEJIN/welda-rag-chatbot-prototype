@@ -1,5 +1,12 @@
-"""Build the LCEL RAG chain that powers the Welda glucose coaching chatbot."""
+"""Build the LCEL RAG chain that powers the Welda glucose coaching chatbot.
 
+Tracing:
+    LangSmith tracing is enabled automatically when LANGSMITH_TRACING=true is
+    set in .env. All LCEL chain invocations are traced step-by-step at
+    https://smith.langchain.com under the project given by LANGSMITH_PROJECT.
+"""
+
+from collections.abc import Iterator
 from operator import itemgetter
 
 from dotenv import load_dotenv
@@ -109,3 +116,27 @@ def build_rag_chain(
         | llm
         | StrOutputParser()
     )
+
+
+def stream_with_sources(
+    chain: Runnable,
+    vectorstore: Chroma,
+    question: str,
+    chat_history: list[BaseMessage] | str | None,
+) -> Iterator[str | tuple[str, list[str]]]:
+    """Stream the chain's tokens, then emit a final ``("__sources__", [...])``.
+
+    The retriever is called once up front so we can attach source filenames to
+    the response without making the streaming chain itself emit metadata. The
+    extra retriever call is cheap because the chain runs the same retrieval
+    internally; vector lookup time is dominated by embedding the query, which
+    happens twice but is well under 100 ms locally.
+    """
+    retriever = vectorstore.as_retriever(search_kwargs={"k": TOP_K})
+    docs = retriever.invoke(question)
+    sources = sorted({d.metadata.get("source_file", "unknown") for d in docs})
+
+    for chunk in chain.stream({"question": question, "chat_history": chat_history}):
+        yield chunk
+
+    yield ("__sources__", sources)
