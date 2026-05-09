@@ -1,0 +1,510 @@
+{
+  "bge-m3": {
+    "per_query": [
+      {
+        "precision": 0.6666666666666666,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "혈당 스파이크가 뭔가요?",
+        "retrieved": [
+          "01_blood_glucose_basics.md",
+          "02_glycemic_index.md",
+          "01_blood_glucose_basics.md"
+        ],
+        "expected": [
+          "01_blood_glucose_basics.md"
+        ]
+      },
+      {
+        "precision": 1.0,
+        "recall": 0.5,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "흰쌀밥과 잡곡밥 중 혈당에 더 좋은 건 뭔가요?",
+        "retrieved": [
+          "04_korean_foods_glucose.md",
+          "04_korean_foods_glucose.md",
+          "04_korean_foods_glucose.md"
+        ],
+        "expected": [
+          "04_korean_foods_glucose.md",
+          "02_glycemic_index.md"
+        ]
+      },
+      {
+        "precision": 1.0,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "운동을 식전에 하는 게 좋습니까, 식후에 하는 게 좋습니까?",
+        "retrieved": [
+          "05_exercise_and_glucose.md",
+          "05_exercise_and_glucose.md",
+          "05_exercise_and_glucose.md"
+        ],
+        "expected": [
+          "05_exercise_and_glucose.md"
+        ]
+      },
+      {
+        "precision": 0.6666666666666666,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "TIR이 뭐고 어느 정도가 정상인가요?",
+        "retrieved": [
+          "03_cgm_data_interpretation.md",
+          "03_cgm_data_interpretation.md",
+          "02_glycemic_index.md"
+        ],
+        "expected": [
+          "03_cgm_data_interpretation.md"
+        ]
+      },
+      {
+        "precision": 0.6666666666666666,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "저GI 식품에는 어떤 것들이 있나요?",
+        "retrieved": [
+          "02_glycemic_index.md",
+          "02_glycemic_index.md",
+          "04_korean_foods_glucose.md"
+        ],
+        "expected": [
+          "02_glycemic_index.md"
+        ]
+      },
+      {
+        "precision": 1.0,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "인슐린 저항성은 회복이 가능한가요?",
+        "retrieved": [
+          "07_insulin_resistance.md",
+          "07_insulin_resistance.md",
+          "07_insulin_resistance.md"
+        ],
+        "expected": [
+          "07_insulin_resistance.md"
+        ]
+      },
+      {
+        "precision": 1.0,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "식사 순서가 혈당에 영향을 미치나요?",
+        "retrieved": [
+          "06_diet_recommendations.md",
+          "06_diet_recommendations.md",
+          "06_diet_recommendations.md"
+        ],
+        "expected": [
+          "06_diet_recommendations.md"
+        ]
+      },
+      {
+        "precision": 0.3333333333333333,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "라면이 혈당에 안 좋은 이유는 뭔가요?",
+        "retrieved": [
+          "04_korean_foods_glucose.md",
+          "01_blood_glucose_basics.md",
+          "06_diet_recommendations.md"
+        ],
+        "expected": [
+          "04_korean_foods_glucose.md"
+        ]
+      },
+      {
+        "precision": 1.0,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "근력 운동도 혈당 관리에 도움이 되나요?",
+        "retrieved": [
+          "05_exercise_and_glucose.md",
+          "05_exercise_and_glucose.md",
+          "05_exercise_and_glucose.md"
+        ],
+        "expected": [
+          "05_exercise_and_glucose.md"
+        ]
+      },
+      {
+        "precision": 0.6666666666666666,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "공복 혈당 정상 범위는 어떻게 되나요?",
+        "retrieved": [
+          "01_blood_glucose_basics.md",
+          "01_blood_glucose_basics.md",
+          "02_glycemic_index.md"
+        ],
+        "expected": [
+          "01_blood_glucose_basics.md"
+        ]
+      },
+      {
+        "precision": 1.0,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "혈당부하(GL)와 혈당지수(GI)의 차이는 뭔가요?",
+        "retrieved": [
+          "02_glycemic_index.md",
+          "02_glycemic_index.md",
+          "02_glycemic_index.md"
+        ],
+        "expected": [
+          "02_glycemic_index.md"
+        ]
+      },
+      {
+        "precision": 1.0,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "한국인의 인슐린 저항성 유병률이 높은 이유는 뭔가요?",
+        "retrieved": [
+          "07_insulin_resistance.md",
+          "07_insulin_resistance.md",
+          "07_insulin_resistance.md"
+        ],
+        "expected": [
+          "07_insulin_resistance.md"
+        ]
+      },
+      {
+        "precision": 1.0,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "CGM 변동계수(CV)는 어떻게 해석합니까?",
+        "retrieved": [
+          "03_cgm_data_interpretation.md",
+          "03_cgm_data_interpretation.md",
+          "03_cgm_data_interpretation.md"
+        ],
+        "expected": [
+          "03_cgm_data_interpretation.md"
+        ]
+      },
+      {
+        "precision": 0.6666666666666666,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "간헐적 단식이 혈당에 어떤 영향을 미치나요?",
+        "retrieved": [
+          "06_diet_recommendations.md",
+          "04_korean_foods_glucose.md",
+          "06_diet_recommendations.md"
+        ],
+        "expected": [
+          "06_diet_recommendations.md"
+        ]
+      },
+      {
+        "precision": 0.6666666666666666,
+        "recall": 0.5,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "떡류는 왜 혈당을 빠르게 올리나요?",
+        "retrieved": [
+          "04_korean_foods_glucose.md",
+          "04_korean_foods_glucose.md",
+          "01_blood_glucose_basics.md"
+        ],
+        "expected": [
+          "04_korean_foods_glucose.md",
+          "02_glycemic_index.md"
+        ]
+      }
+    ],
+    "aggregate": {
+      "precision": 0.8222222222222223,
+      "recall": 0.9333333333333333,
+      "mrr": 1.0,
+      "hit_at_1": 1.0,
+      "hit_at_3": 1.0,
+      "avg_latency_ms": 66.66552221868187
+    }
+  },
+  "kure-v1": {
+    "per_query": [
+      {
+        "precision": 0.6666666666666666,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "혈당 스파이크가 뭔가요?",
+        "retrieved": [
+          "01_blood_glucose_basics.md",
+          "01_blood_glucose_basics.md",
+          "02_glycemic_index.md"
+        ],
+        "expected": [
+          "01_blood_glucose_basics.md"
+        ]
+      },
+      {
+        "precision": 1.0,
+        "recall": 0.5,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "흰쌀밥과 잡곡밥 중 혈당에 더 좋은 건 뭔가요?",
+        "retrieved": [
+          "04_korean_foods_glucose.md",
+          "04_korean_foods_glucose.md",
+          "04_korean_foods_glucose.md"
+        ],
+        "expected": [
+          "04_korean_foods_glucose.md",
+          "02_glycemic_index.md"
+        ]
+      },
+      {
+        "precision": 1.0,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "운동을 식전에 하는 게 좋습니까, 식후에 하는 게 좋습니까?",
+        "retrieved": [
+          "05_exercise_and_glucose.md",
+          "05_exercise_and_glucose.md",
+          "05_exercise_and_glucose.md"
+        ],
+        "expected": [
+          "05_exercise_and_glucose.md"
+        ]
+      },
+      {
+        "precision": 1.0,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "TIR이 뭐고 어느 정도가 정상인가요?",
+        "retrieved": [
+          "03_cgm_data_interpretation.md",
+          "03_cgm_data_interpretation.md",
+          "03_cgm_data_interpretation.md"
+        ],
+        "expected": [
+          "03_cgm_data_interpretation.md"
+        ]
+      },
+      {
+        "precision": 0.6666666666666666,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "저GI 식품에는 어떤 것들이 있나요?",
+        "retrieved": [
+          "02_glycemic_index.md",
+          "02_glycemic_index.md",
+          "04_korean_foods_glucose.md"
+        ],
+        "expected": [
+          "02_glycemic_index.md"
+        ]
+      },
+      {
+        "precision": 1.0,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "인슐린 저항성은 회복이 가능한가요?",
+        "retrieved": [
+          "07_insulin_resistance.md",
+          "07_insulin_resistance.md",
+          "07_insulin_resistance.md"
+        ],
+        "expected": [
+          "07_insulin_resistance.md"
+        ]
+      },
+      {
+        "precision": 0.6666666666666666,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "식사 순서가 혈당에 영향을 미치나요?",
+        "retrieved": [
+          "06_diet_recommendations.md",
+          "04_korean_foods_glucose.md",
+          "06_diet_recommendations.md"
+        ],
+        "expected": [
+          "06_diet_recommendations.md"
+        ]
+      },
+      {
+        "precision": 0.3333333333333333,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "라면이 혈당에 안 좋은 이유는 뭔가요?",
+        "retrieved": [
+          "04_korean_foods_glucose.md",
+          "01_blood_glucose_basics.md",
+          "01_blood_glucose_basics.md"
+        ],
+        "expected": [
+          "04_korean_foods_glucose.md"
+        ]
+      },
+      {
+        "precision": 1.0,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "근력 운동도 혈당 관리에 도움이 되나요?",
+        "retrieved": [
+          "05_exercise_and_glucose.md",
+          "05_exercise_and_glucose.md",
+          "05_exercise_and_glucose.md"
+        ],
+        "expected": [
+          "05_exercise_and_glucose.md"
+        ]
+      },
+      {
+        "precision": 0.6666666666666666,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "공복 혈당 정상 범위는 어떻게 되나요?",
+        "retrieved": [
+          "01_blood_glucose_basics.md",
+          "01_blood_glucose_basics.md",
+          "02_glycemic_index.md"
+        ],
+        "expected": [
+          "01_blood_glucose_basics.md"
+        ]
+      },
+      {
+        "precision": 1.0,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "혈당부하(GL)와 혈당지수(GI)의 차이는 뭔가요?",
+        "retrieved": [
+          "02_glycemic_index.md",
+          "02_glycemic_index.md",
+          "02_glycemic_index.md"
+        ],
+        "expected": [
+          "02_glycemic_index.md"
+        ]
+      },
+      {
+        "precision": 1.0,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "한국인의 인슐린 저항성 유병률이 높은 이유는 뭔가요?",
+        "retrieved": [
+          "07_insulin_resistance.md",
+          "07_insulin_resistance.md",
+          "07_insulin_resistance.md"
+        ],
+        "expected": [
+          "07_insulin_resistance.md"
+        ]
+      },
+      {
+        "precision": 1.0,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "CGM 변동계수(CV)는 어떻게 해석합니까?",
+        "retrieved": [
+          "03_cgm_data_interpretation.md",
+          "03_cgm_data_interpretation.md",
+          "03_cgm_data_interpretation.md"
+        ],
+        "expected": [
+          "03_cgm_data_interpretation.md"
+        ]
+      },
+      {
+        "precision": 0.6666666666666666,
+        "recall": 1.0,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "간헐적 단식이 혈당에 어떤 영향을 미치나요?",
+        "retrieved": [
+          "06_diet_recommendations.md",
+          "04_korean_foods_glucose.md",
+          "06_diet_recommendations.md"
+        ],
+        "expected": [
+          "06_diet_recommendations.md"
+        ]
+      },
+      {
+        "precision": 0.6666666666666666,
+        "recall": 0.5,
+        "mrr": 1.0,
+        "hit_at_1": 1,
+        "hit_at_3": 1,
+        "query": "떡류는 왜 혈당을 빠르게 올리나요?",
+        "retrieved": [
+          "04_korean_foods_glucose.md",
+          "01_blood_glucose_basics.md",
+          "04_korean_foods_glucose.md"
+        ],
+        "expected": [
+          "04_korean_foods_glucose.md",
+          "02_glycemic_index.md"
+        ]
+      }
+    ],
+    "aggregate": {
+      "precision": 0.8222222222222223,
+      "recall": 0.9333333333333333,
+      "mrr": 1.0,
+      "hit_at_1": 1.0,
+      "hit_at_3": 1.0,
+      "avg_latency_ms": 18.107166653499007
+    }
+  }
+}

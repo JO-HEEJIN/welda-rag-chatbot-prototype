@@ -1,0 +1,62 @@
+[
+  {
+    "query": "혈당 스파이크가 뭔가요?",
+    "relevant_files": ["01_blood_glucose_basics.md"]
+  },
+  {
+    "query": "흰쌀밥과 잡곡밥 중 혈당에 더 좋은 건 뭔가요?",
+    "relevant_files": ["04_korean_foods_glucose.md", "02_glycemic_index.md"]
+  },
+  {
+    "query": "운동을 식전에 하는 게 좋습니까, 식후에 하는 게 좋습니까?",
+    "relevant_files": ["05_exercise_and_glucose.md"]
+  },
+  {
+    "query": "TIR이 뭐고 어느 정도가 정상인가요?",
+    "relevant_files": ["03_cgm_data_interpretation.md"]
+  },
+  {
+    "query": "저GI 식품에는 어떤 것들이 있나요?",
+    "relevant_files": ["02_glycemic_index.md"]
+  },
+  {
+    "query": "인슐린 저항성은 회복이 가능한가요?",
+    "relevant_files": ["07_insulin_resistance.md"]
+  },
+  {
+    "query": "식사 순서가 혈당에 영향을 미치나요?",
+    "relevant_files": ["06_diet_recommendations.md"]
+  },
+  {
+    "query": "라면이 혈당에 안 좋은 이유는 뭔가요?",
+    "relevant_files": ["04_korean_foods_glucose.md"]
+  },
+  {
+    "query": "근력 운동도 혈당 관리에 도움이 되나요?",
+    "relevant_files": ["05_exercise_and_glucose.md"]
+  },
+  {
+    "query": "공복 혈당 정상 범위는 어떻게 되나요?",
+    "relevant_files": ["01_blood_glucose_basics.md"]
+  },
+  {
+    "query": "혈당부하(GL)와 혈당지수(GI)의 차이는 뭔가요?",
+    "relevant_files": ["02_glycemic_index.md"]
+  },
+  {
+    "query": "한국인의 인슐린 저항성 유병률이 높은 이유는 뭔가요?",
+    "relevant_files": ["07_insulin_resistance.md"]
+  },
+  {
+    "query": "CGM 변동계수(CV)는 어떻게 해석합니까?",
+    "relevant_files": ["03_cgm_data_interpretation.md"]
+  },
+  {
+    "query": "간헐적 단식이 혈당에 어떤 영향을 미치나요?",
+    "relevant_files": ["06_diet_recommendations.md"]
+  },
+  {
+    "query": "떡류는 왜 혈당을 빠르게 올리나요?",
+    "relevant_files": ["04_korean_foods_glucose.md", "02_glycemic_index.md"]
+  }
+]

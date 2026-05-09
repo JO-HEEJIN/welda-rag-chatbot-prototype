@@ -51,7 +51,7 @@ state dict { question, context, sources, chat_history, user_context, retrieved_d
 
 ### Design Decisions
 
-- **왜 BGE-M3인가**: 다국어 모델 중 한국어 retrieval 성능이 검증된 모델. (Block 5에서 KURE-v1과 비교 평가 예정)
+- **왜 BGE-M3인가**: 다국어 모델 중 한국어 retrieval 성능이 검증된 모델. KURE-v1과의 정량 비교는 아래 Embedding Model Evaluation 섹션 참고.
 - **왜 chunk_size=500인가**: 도메인 문서가 짧고 주제별로 구조화되어 있어, 작은 청크로도 의미 단위 보존 가능. 500이면 한국어로 약 300-400자 수준.
 - **왜 LCEL인가**: 파이프 연산자 기반 선언적 구조로 체인 변경/디버깅이 용이. LangSmith 트레이싱과 자연 호환.
 
@@ -120,16 +120,80 @@ LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 
 이 구조 덕분에 LLM 응답 품질 문제가 발생했을 때 retriever 결과 / prompt 채우기 / LLM 응답 중 어느 단계가 원인인지 즉시 식별할 수 있습니다.
 
+## Embedding Model Evaluation
+
+도메인이 한국어(혈당 관리, 한국 식단)이라는 점에서 다국어 모델 BGE-M3와 한국어 특화 모델 KURE-v1을 비교 평가했습니다.
+
+### 평가 방법
+
+- 평가 데이터셋: 도메인 관련 한국어 쿼리 15개, 각 쿼리에 ground truth 관련 파일 라벨링 (primary-source 기준)
+- 두 모델 모두 동일한 청킹/검색 파라미터로 인덱스 빌드 (chunk_size=500, overlap=50, top-k=3)
+- 각 쿼리당 5개 retrieval metric + 평균 query latency 측정
+
+### 결과
+
+| Metric | BGE-M3 | KURE-v1 | Winner |
+|---|---|---|---|
+| Precision@3 | 0.8222 | 0.8222 | Tie |
+| Recall@3 | 0.9333 | 0.9333 | Tie |
+| MRR | 1.0000 | 1.0000 | Tie |
+| Hit@1 | 1.0000 | 1.0000 | Tie |
+| Hit@3 | 1.0000 | 1.0000 | Tie |
+| Avg Latency (ms) | 66.67 | 18.11 | KURE-v1 |
+
+15 쿼리 중 8 쿼리는 두 모델이 동일한 청크 3개를 반환했고, 5 쿼리는 다른 청크를 반환했지만 metric 단위로는 상쇄되어 동률입니다.
+
+### 결과 해석
+
+평가 결과 5개 품질 metrics에서 두 모델이 모두 ceiling에 도달했습니다 (MRR 1.0, Hit@1 1.0). 이는 두 모델의 능력이 정말 동일해서가 아니라, 평가 디자인의 다음 한계 때문으로 분석됩니다:
+
+1. **평가셋 규모**: 15 쿼리는 통계적으로 모델 차이를 드러낼 power가 부족
+2. **도메인 문서 크기**: 7 파일 25 청크의 후보 풀이 작아 실수 여지 적음
+3. **쿼리-문서 키워드 직접 매칭**: 다수 쿼리가 ground truth 파일의 핵심 용어를 직접 포함
+
+진정한 모델 차이를 측정하려면 더 큰 평가셋, 도메인 외 distractor 쿼리, paraphrase 처리가 어려운 쿼리 등이 필요합니다.
+
+### 결정: BGE-M3 유지
+
+다음 이유로 BGE-M3을 유지합니다:
+
+1. 품질 동률 (ceiling effect 한계 내에서)
+2. Latency 차이 49ms는 챗봇 전체 응답 시간(약 9초) 대비 0.5% 수준으로 사용자 인지 임계 미만
+3. **다국어 확장성**: 웰다의 장기 비전이 "아시아 전반의 식습관 개선"이고 영어 의학 논문/가이드라인 직접 인덱싱 시나리오가 있는 만큼 다국어 모델이 전략적으로 유리
+
+### Limitations
+
+- 평가셋 15개로 ceiling effect 발생, 실제 모델 능력 차이 측정 불가
+- Ground truth 라벨링이 단일 평가자 기준 (inter-annotator agreement 미측정)
+- 두 모델 모두 사전학습 가중치만 사용, 도메인 fine-tuning 미적용
+
+### Future Work
+
+평가 신뢰도 향상을 위한 다음 단계:
+
+- 평가셋 100개 이상 확장
+- Distractor 쿼리 추가 (도메인 외 의학 토픽)
+- Paraphrase 쿼리 추가 (같은 의도 다른 표현)
+- LLM-as-judge로 retrieval relevance 정성 평가
+
+### Reproduction
+
+```bash
+python evaluation/run_eval.py
+```
+
+상세 per-query 결과는 `evaluation/eval_results.json`에서 확인 가능합니다.
+
 ## Tech Stack
 
 - LangChain (LCEL)
 - Anthropic Claude (Sonnet 4.6)
 - Chroma (vector store)
-- BGE-M3 / KURE-v1 (Korean embeddings, 비교 평가 예정)
+- BGE-M3 (다국어 임베딩, KURE-v1과 비교 평가 후 채택)
 
 ## Status
 
-개발 진행 중 (Block 5 Part 1 완료: 단일 retrieval 리팩터링, retrieval/generation 체인 분리)
+개발 진행 중 (Block 5 Part 2 완료: BGE-M3 vs KURE-v1 정량 비교 평가, BGE-M3 유지 결정)
 
 ## Disclaimer
 
