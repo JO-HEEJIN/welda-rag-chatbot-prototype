@@ -184,16 +184,76 @@ python evaluation/run_eval.py
 
 상세 per-query 결과는 `evaluation/eval_results.json`에서 확인 가능합니다.
 
+## Lifecycle State Machine (LangGraph)
+
+웰다의 5단계 사용자 라이프사이클을 LangGraph state machine으로 표현합니다. 기존 LCEL RAG 체인은 그대로 두고, 그 위에 LangGraph layer를 얹어 의도(intent) 라우팅과 단계별 응답 차별화를 담당합니다. RAG 체인은 그래프 노드 안에서 호출되는 도구 역할입니다.
+
+### Lifecycle Stages
+
+1. **UNDERSTANDING** — 내 몸 이해하기 (웰다 시작 직후)
+2. **SPIKE_CONTROL** — 혈당 스파이크 조절 (식후 급상승 줄이기)
+3. **HUNGER_CONTROL** — 배고픔 조절 (가짜 배고픔 식별)
+4. **FAT_BURN** — 체지방 연소 (대사 유연성 회복 후)
+5. **MAINTENANCE** — 감량 유지 (요요 방지)
+
+각 단계는 `description`, `focus_areas`, `tone_guideline`, `prohibited_topics` 메타데이터를 가지며, 프롬프트에 주입되어 같은 질문이라도 단계에 따라 다른 응답을 만들어냅니다 (`src/lifecycle.py`).
+
+### Graph Flow
+
+```
+사용자 입력
+    ↓
+classify_intent  (rule-based: emergency > medical > diet > general)
+    ↓
+   ┌────────────┬──────────────────┬──────────┬──────────┐
+   │            │                  │          │          │
+emergency   medical_disclaimer    rag        rag        ...
+   │            │                  │          │
+  END           │              generate    generate
+                │                  │          │
+                │                 END        END
+                │
+               END
+```
+
+- **emergency**: RAG 없이 즉시 응급 안내. 119 신고/응급실 이동을 명시.
+- **medical_disclaimer**: RAG로 일반 정보를 찾되 응답 마지막에 의료진 상담 권유 문장을 강제.
+- **diet/general → rag → generate**: 표준 RAG 흐름. `generate` 노드가 라이프사이클 메타데이터를 프롬프트에 주입해 단계별 톤·중점 영역·금지 주제를 반영.
+
+### Why LangGraph
+
+LCEL은 직선 파이프라인에 적합한 반면, 라이프사이클·의도별 라우팅은 분기와 조건부 흐름이 필요합니다. LangGraph state machine으로 사용자 stage·intent·대화 이력을 명시적으로 추적하고, 의료 도메인에 필수적인 응급/의학 자문 게이트를 conditional edges로 분리해 구조적으로 강제했습니다.
+
+### Stage-Aware Response Example
+
+같은 질문 "흰쌀밥 먹어도 돼요?"에 대해 단계별 응답 차이:
+
+- **UNDERSTANDING**: "지금 당장 식단을 바꾸실 필요는 없습니다. 평소처럼 드시면서 CGM 데이터를 통해 혈당 곡선이 어떻게 그려지는지 살펴보십시오." (관찰·교육 톤)
+- **SPIKE_CONTROL**: 식사 순서, 잡곡 비율, 식후 산책 등 즉시 적용 팁 3가지를 GI 수치와 함께 제시. (실용·구체 톤)
+- **FAT_BURN**: 인슐린 저감 시간, TRE 타이밍, 양/조합/타이밍 표 형식 정리. 기초 설명 생략. (실행·전략 톤)
+
+`prohibited_topics`도 작동합니다. UNDERSTANDING 단계에서는 체지방 감량 압박이나 단식 권유가 응답에 등장하지 않습니다.
+
+### Files Added in Block 6
+
+- `src/lifecycle.py` — `LifecycleStage` enum, `LifecycleMeta` dataclass, 5단계 메타데이터
+- `src/agent_state.py` — LangGraph TypedDict (`messages` add reducer 포함)
+- `src/nodes.py` — 5개 노드 함수와 의도 분류 키워드
+- `src/graph.py` — `build_lifecycle_graph()` factory, conditional edges 정의
+- `tests/test_lifecycle_graph.py` — 메타데이터·intent·라우팅 테스트
+- `scripts/simulate_block6.py` — 5단계/응급/의학 시뮬레이션
+
 ## Tech Stack
 
 - LangChain (LCEL)
+- LangGraph (state machine, lifecycle routing)
 - Anthropic Claude (Sonnet 4.6)
 - Chroma (vector store)
 - BGE-M3 (다국어 임베딩, KURE-v1과 비교 평가 후 채택)
 
 ## Status
 
-개발 진행 중 (Block 5 Part 2 완료: BGE-M3 vs KURE-v1 정량 비교 평가, BGE-M3 유지 결정)
+개발 진행 중 (Block 6 완료: LangGraph 라이프사이클 state machine, intent routing, emergency/medical 게이트)
 
 ## Disclaimer
 

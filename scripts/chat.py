@@ -1,4 +1,4 @@
-"""CLI chat interface for the Welda RAG chatbot with profile + memory."""
+"""CLI chat interface for the Welda RAG chatbot powered by the lifecycle graph."""
 
 import sys
 from pathlib import Path
@@ -9,7 +9,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.conversation_memory import ConversationManager
-from src.rag_chain import build_rag_chain, load_vector_store, stream_with_sources
+from src.graph import build_lifecycle_graph
+from src.lifecycle import LIFECYCLE_METADATA, LifecycleStage
+from src.rag_chain import load_vector_store
 from src.user_profile import UserProfile
 
 DIET_GOAL_CHOICES = {
@@ -22,6 +24,14 @@ DIET_GOAL_CHOICES = {
 INSULIN_LEVEL_CHOICES = {"1": "low", "2": "moderate", "3": "high"}
 
 GENDER_CHOICES = {"1": "male", "2": "female", "3": "other"}
+
+LIFECYCLE_CHOICES: dict[str, LifecycleStage] = {
+    "1": LifecycleStage.UNDERSTANDING,
+    "2": LifecycleStage.SPIKE_CONTROL,
+    "3": LifecycleStage.HUNGER_CONTROL,
+    "4": LifecycleStage.FAT_BURN,
+    "5": LifecycleStage.MAINTENANCE,
+}
 
 
 def ask_int(prompt: str, low: int, high: int) -> int:
@@ -70,6 +80,18 @@ def ask_string_list(prompt: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def ask_lifecycle_stage() -> LifecycleStage:
+    print("\n[라이프사이클 단계 선택]")
+    for key, stage in LIFECYCLE_CHOICES.items():
+        meta = LIFECYCLE_METADATA[stage]
+        print(f"  {key}. {meta.description}")
+    while True:
+        raw = input("현재 어느 단계에 계신가요? (1-5): ").strip()
+        if raw in LIFECYCLE_CHOICES:
+            return LIFECYCLE_CHOICES[raw]
+        print("  1-5 중 하나를 입력하세요.")
+
+
 def build_profile_interactively() -> UserProfile:
     print("\n[프로필 입력] 항목별로 답해 주십시오. 빈칸으로 두면 기본값/생략 처리됩니다.\n")
     while True:
@@ -107,8 +129,8 @@ def main() -> None:
         print(f"[chat] No index found at {persist_dir}. Run scripts/ingest.py first.")
         return
 
-    print("[chat] Welda 혈당 관리 코치 CLI 데모입니다.")
-    print("[chat] 명령: exit/quit (종료), reset (메모리 초기화), history (대화 기록), profile (프로필 보기)\n")
+    print("[chat] Welda 혈당 관리 코치 CLI 데모입니다 (LangGraph 라이프사이클 모드).")
+    print("[chat] 명령: exit/quit (종료), reset (메모리 초기화), history (대화 기록), profile (프로필 보기), stage (단계 보기/변경)\n")
 
     profile: UserProfile | None = None
     answer = input("사용자 프로필을 설정하시겠습니까? (y/n): ").strip().lower()
@@ -118,15 +140,18 @@ def main() -> None:
     else:
         print("[프로필 없이 진행]\n")
 
+    stage = ask_lifecycle_stage()
+    print(f"\n[단계 저장됨] {LIFECYCLE_METADATA[stage].description}\n")
+
     vectorstore = load_vector_store(str(persist_dir))
-    components = build_rag_chain(vectorstore, user_profile=profile)
+    graph = build_lifecycle_graph(vectorstore, user_profile=profile)
     memory = ConversationManager(max_turns=10)
 
     print()
     print("=" * 60)
     print("준비가 완료되었습니다. 혈당 관리에 대해 질문해 주십시오.")
     print("예시: '아침에 흰쌀밥 먹어도 되나요?'")
-    print("명령: history (대화 기록)  profile (프로필)  reset (메모리 초기화)  exit (종료)")
+    print("명령: history  profile  stage  reset  exit")
     print("=" * 60)
 
     while True:
@@ -155,23 +180,32 @@ def main() -> None:
             else:
                 print(f"[프로필] {profile.to_prompt_context()}\n")
             continue
+        if cmd == "stage":
+            print(f"[현재 단계] {LIFECYCLE_METADATA[stage].description}")
+            change = input("단계를 변경하시겠습니까? (y/n): ").strip().lower()
+            if change == "y":
+                stage = ask_lifecycle_stage()
+                print(f"\n[단계 변경됨] {LIFECYCLE_METADATA[stage].description}\n")
+            continue
+
+        result = graph.invoke(
+            {
+                "user_question": question,
+                "lifecycle_stage": stage.value,
+                "messages": memory.get_history(),
+            }
+        )
 
         print()
-        full_response = ""
-        sources: list[str] = []
-        for chunk in stream_with_sources(
-            components, question, memory.get_history()
-        ):
-            if isinstance(chunk, tuple) and chunk[0] == "__sources__":
-                sources = chunk[1]
-                continue
-            print(chunk, end="", flush=True)
-            full_response += chunk
-        print()
-        print(f"\n참고: {', '.join(sources)}\n")
+        print(result["final_answer"])
+        sources = result.get("sources") or []
+        if sources:
+            print(f"\n참고: {', '.join(sources)}\n")
+        else:
+            print()
 
         memory.add_user_message(question)
-        memory.add_ai_message(full_response)
+        memory.add_ai_message(result["final_answer"])
 
     print("[chat] 대화를 종료합니다. 건강하십시오.")
 
