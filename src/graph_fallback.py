@@ -25,13 +25,15 @@ def create_fallback_llm(
     model: str = "claude-sonnet-4-6",
     max_uses: int = 3,
     temperature: float = 0.3,
-    max_tokens: int = 1024,
+    max_tokens: int = 4096,
 ) -> ChatAnthropic:
     """Build a ChatAnthropic with the server-side ``web_search`` tool enabled.
 
     ``max_uses`` caps the number of web search calls per response to control
-    cost. Anthropic's web_search tool is server-managed: no client-side
-    orchestration is needed — the model decides whether to call it.
+    cost. ``max_tokens`` defaults to 4096 because fallback answers tend to be
+    long: trend-food queries pull in definition + nutrition breakdown +
+    lifecycle-aware guidance + mandatory disclaimer, which routinely exceeds
+    1024 tokens and gets silently truncated otherwise.
     """
     return ChatAnthropic(
         model=model,

@@ -175,3 +175,117 @@ docker exec \
 6. 환경 변수 적용 후 재실행 → 정상화 (~30초)
 
 총 약 7분. 추측 없이 단계마다 측정 → 진단 → 다음 단계로 좁히는 방식이 결과적으로 빠른 길이었습니다.
+
+---
+
+## 2026-05-09 — AIMessageChunk.content가 web_search tool 활성화 시 list로 바뀜
+
+### 발생 위치
+`scripts/chat.py` 의 `stream_graph_response` (Block 6.5 에서 작성, Block 7 Part 3 통합 직후 실사용 시 발견).
+
+### 증상
+
+`흰쌀밥 먹어도 돼요?` 를 입력하면 응답 첫 청크가 한 번 정상 표시된 직후 다음 예외로 그래프가 죽었습니다.
+
+```
+[{'text': '드셔도 됩니다. 다만 혈당 스파이크를', 'type': 'text', 'index': 0}]Traceback (most recent call last):
+  ...
+  File "scripts/chat.py", line 105, in stream_graph_response
+    full_response += chunk.content
+TypeError: can only concatenate str (not "list") to str
+```
+
+토큰 누적 한 번 만에 `full_response += chunk.content` 에서 string 과 list 를 concat 하려다 실패했습니다. 첫 chunk의 raw repr 도 print 에 그대로 흘러나와 있었습니다.
+
+### 진단
+
+`AIMessageChunk.content` 는 LangChain의 일반 ChatAnthropic 호출에서는 `str` 이지만, **Anthropic server-side `web_search` tool 을 attach 한 LLM 에서는 block dict 의 list** 가 됩니다. 한 chunk 안에 `{"type": "text", "text": "..."}`, `{"type": "server_tool_use", ...}`, `{"type": "web_search_tool_result", ...}` 같은 여러 block 이 섞여 들어옵니다.
+
+Block 6.5 의 streaming 코드는 ChatAnthropic 의 단일-content 가정을 그대로 두고 작성됐고, Block 7 Part 3 에서 fallback LLM 에 web_search tool 을 붙이면서 그 가정이 무너졌습니다. 단위 테스트는 `extract_text_from_response()` 같은 helper 를 모킹된 list-content 로 검증해 통과했지만, chat.py 의 streaming 경로는 사람이 실제로 돌려보기 전까지 누구도 list 분기를 거치지 않았습니다.
+
+### 해결
+
+`scripts/chat.py` 에 작은 helper 를 두고 streaming 분기에서 사용합니다.
+
+```python
+def _chunk_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+        return "".join(parts)
+    return ""
+```
+
+`stream_graph_response` 안:
+
+```python
+if isinstance(chunk, AIMessageChunk):
+    text = _chunk_text(chunk.content)
+    if text:
+        print(text, end="", flush=True)
+        full_response += text
+        streamed_any_tokens = True
+```
+
+`server_tool_use` 와 `web_search_tool_result` 같은 internal block 은 사용자 화면에 띄울 필요가 없으므로 자연스럽게 필터됩니다. 동일한 화면 처리 + 토큰 누적 동작을 web_search 켜진 응답에서도 그대로 받게 됐습니다.
+
+### 교훈
+
+1. **Tool-augmented LLM 의 streaming chunk 는 multi-block 이다**: ChatAnthropic 만 봤을 때의 "content == str" 가정은 server-side tool 을 붙이는 순간 깨집니다. 모킹 테스트 한 번으로 확실히 잡았어야 하는 회귀.
+2. **Helper 가 있어도 streaming 경로에는 자동 적용되지 않는다**: Part 2 의 `extract_text_from_response()` 는 완성된 응답을 가정해 만들었습니다. streaming chunk 마다 동일한 변환을 자동으로 거치지 않으므로 호출자 측에서 한 번 더 흘려보내야 합니다.
+3. **수동 시연이 단위 테스트를 대체할 수는 없지만, 단위 테스트가 수동 시연을 대체할 수도 없다**: 두 layer 의 가정이 어긋난 케이스가 이번처럼 streaming 경로에서 터집니다. 이번 사례 이후 LangGraph + tool-augmented streaming 통합 시에는 작은 e2e 스모크 (3~5 청크만 흘려보기) 를 단위 테스트에 추가하는 것이 합리적인 보강책입니다.
+
+---
+
+## 2026-05-09 — Fallback 응답이 ~1024 토큰에서 잘려 끝 문장이 사라짐
+
+### 발생 위치
+`src/graph_fallback.py` 의 `create_fallback_llm()` (Block 7 Part 2 에서 작성, Part 3 실 시연에서 발견).
+
+### 증상
+
+`두쫀쿠 먹어도 돼요?` 응답이 다음과 같이 마지막 문단 도중에 끊겼습니다.
+
+```
+**그래도 먹고 싶다면 — 이렇게 드십시오**
+
+1. **단백질을 먼저 드십
+```
+
+이어서 `참고:` citation 줄은 정상 출력됐습니다. 즉, 응답 텍스트 자체가 잘렸고 sources / disclaimer 흐름은 정상이었습니다.
+
+### 진단
+
+`create_fallback_llm(max_tokens=1024)` 가 기본값이었습니다. 두쫀쿠 같은 web_search fallback 응답은 다음을 모두 포함하므로 토큰 사용이 큽니다:
+
+- 정의/구성 (재료 분석)
+- 영양 수치 (탄수/지방/단백질/칼로리)
+- 혈당 영향 양면 분석
+- 실천 권장 사항
+- 강제 disclaimer
+
+1024 max_tokens 는 단순한 한국어 응답 4~6 문단 정도에 적합하며, web_search citation 이 풍부한 longtail 응답에는 부족합니다.
+
+### 해결
+
+`max_tokens` 기본값을 **4096** 으로 증가시켰습니다. Claude Sonnet 4.6 의 응답 토큰 한도 (8K) 이내, 평균 응답 비용 증가는 토큰 단위 청구라 실제 출력에 비례 (안 쓴 토큰은 청구 안 됨).
+
+```python
+def create_fallback_llm(
+    model: str = "claude-sonnet-4-6",
+    max_uses: int = 3,
+    temperature: float = 0.3,
+    max_tokens: int = 4096,  # was 1024
+) -> ChatAnthropic:
+    ...
+```
+
+### 교훈
+
+1. **max_tokens 는 응답 풍부도 * fallback 케이스 * disclaimer 분량 의 합으로 잡아야 한다**: fallback 케이스는 그래프 hit 보다 응답이 통상 더 깁니다.
+2. **응답 truncation 은 silent failure 다**: API 가 에러를 던지지 않고 정중하게 잘린 텍스트를 돌려줍니다. `finish_reason="max_tokens"` 같은 메타데이터를 응답 검증 단계에서 명시적으로 체크하는 게 안전합니다 (향후 보강).
+3. **시연이 단위 테스트보다 길어야 한다**: 단위 테스트의 짧은 mock 응답은 1024 토큰에 잘 들어맞아 truncation 을 노출하지 않습니다. 실제 사용자 쿼리로 한 번 돌려봐야 잡힙니다.

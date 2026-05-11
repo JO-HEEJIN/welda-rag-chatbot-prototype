@@ -82,6 +82,25 @@ def ask_string_list(prompt: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _chunk_text(content) -> str:
+    """Extract printable text from an AIMessageChunk content payload.
+
+    When the underlying LLM has the Anthropic ``web_search`` tool attached,
+    streamed chunks arrive with ``content`` as a list of block dicts (text /
+    server_tool_use / web_search_tool_result). Without the tool, ``content``
+    is a plain string. Pull just the text portions in either case.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+        return "".join(parts)
+    return ""
+
+
 def stream_graph_response(graph, initial_state: dict) -> tuple[str, list[str]]:
     """Stream the LangGraph response token by token and return (text, sources).
 
@@ -100,10 +119,12 @@ def stream_graph_response(graph, initial_state: dict) -> tuple[str, list[str]]:
     ):
         if stream_mode == "messages":
             chunk, _metadata = payload
-            if isinstance(chunk, AIMessageChunk) and chunk.content:
-                print(chunk.content, end="", flush=True)
-                full_response += chunk.content
-                streamed_any_tokens = True
+            if isinstance(chunk, AIMessageChunk):
+                text = _chunk_text(chunk.content)
+                if text:
+                    print(text, end="", flush=True)
+                    full_response += text
+                    streamed_any_tokens = True
         elif stream_mode == "values":
             final_state = payload
 
