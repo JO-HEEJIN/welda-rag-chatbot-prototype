@@ -90,6 +90,18 @@ class WeldaGraphDB:
             record = session.run(query, korean_name=korean_name).single()
             return record["name"] if record else None
 
+    def get_all_food_korean_names(self) -> list[str]:
+        """Return every Food node's ``display_name_ko`` sorted by length desc.
+
+        Sorted longest-first so substring matching in ``food_extraction_node``
+        picks the most specific name ("잡곡밥" before "밥") when a query
+        mentions multiple candidate foods.
+        """
+        query = "MATCH (f:Food) RETURN f.display_name_ko AS name"
+        with self._driver.session() as session:
+            names = [r["name"] for r in session.run(query) if r["name"]]
+        return sorted(names, key=len, reverse=True)
+
     # ----- Food domain query -----------------------------------------------
 
     def lookup_food(self, food_name: str) -> GraphLookupResult:

@@ -22,3 +22,10 @@ class AgentState(TypedDict, total=False):
     retrieved_context: str
     sources: list[str]
     final_answer: str
+
+    # Block 7 GraphRAG fields
+    food_query: str
+    graph_context: str
+    graph_found: bool
+    graph_sources: list[str]
+    used_web_search: bool

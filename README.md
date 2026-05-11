@@ -127,6 +127,53 @@ LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 
 이 구조 덕분에 LLM 응답 품질 문제가 발생했을 때 retriever 결과 / prompt 채우기 / LLM 응답 중 어느 단계가 원인인지 즉시 식별할 수 있습니다.
 
+## GraphRAG Flow (Block 7)
+
+LangGraph state machine이 intent에 따라 분기하고, 식단 의도일 때 Neo4j 도메인 그래프 + Chroma vector RAG + (필요 시) Anthropic web_search 를 결합합니다.
+
+```
+사용자 입력
+    ↓
+classify_intent (룰 기반 키워드 분류)
+    ↓
+   ┌─────────┬────────────────┬────────────────┬─────────────┐
+   │         │                │                │             │
+emergency  medical_advice  diet_advice     general
+   ↓         ↓                ↓                ↓
+emergency  medical          food_extraction  food_extraction
+   ↓        _disclaimer        ↓                ↓
+  END        ↓               graph_lookup    graph_lookup
+            END                ↓                ↓
+                              rag (Chroma)    rag (Chroma)
+                               ↓                ↓
+                              generate_or_fallback
+                               · graph hit → context-bound 응답
+                               · graph miss → LLM이 web_search 자동 호출
+                               · disclaimer 강제 주입
+                               ↓
+                              END
+```
+
+### Why GraphRAG
+
+- **Multi-hop 추론**: vector RAG 단독으로는 "흰쌀밥 → 정제 탄수화물 → 급격한 혈당 스파이크 → SPIKE_CONTROL 단계에서 주의" 같은 인과 체인을 일관되게 만들기 어렵습니다. Neo4j traversal은 이 chain을 한 번의 쿼리로 가져옵니다.
+- **Closed-world의 한계**: 도메인 그래프는 등록된 음식만 인식합니다. 신조어/트렌드 음식(두쫀쿠, 엽떡 등)은 web_search 로 보완합니다.
+- **Heuristic-free routing**: 클라이언트에서 trend 신호를 휴리스틱으로 분류하지 않습니다. 그래프 컨텍스트와 사용자 질문을 함께 LLM 에게 넘기고 LLM 이 web_search 호출 여부를 자체 판단합니다. false-positive 가 줄고 모델 업그레이드 시 자동 개선됩니다.
+
+### Latency Profile (실측)
+
+| 시나리오 | 경로 | 측정 wall time |
+|---|---|---|
+| emergency | classify → emergency → END | 0.003s |
+| diet_advice + graph hit | classify → food_ext → graph_lookup → rag → generate | ~12s |
+| diet_advice + graph miss (web_search) | 위 흐름 + web_search 호출 | ~26s |
+| medical_advice | classify → medical_disclaimer | ~7s |
+
+응답에 자동 출처 표시:
+- 그래프 hit: `graph:food:white_rice` 같은 식별자
+- RAG: 마크다운 파일명 (e.g. `04_korean_foods_glucose.md`)
+- web_search: citation URL (namu.wiki, foodpengu.in 등)
+
 ## Embedding Model Evaluation
 
 도메인이 한국어(혈당 관리, 한국 식단)이라는 점에서 다국어 모델 BGE-M3와 한국어 특화 모델 KURE-v1을 비교 평가했습니다.
@@ -260,7 +307,7 @@ LCEL은 직선 파이프라인에 적합한 반면, 라이프사이클·의도�
 
 ## Status
 
-개발 진행 중 (Block 6.5 완료: LangGraph 위에서 토큰 단위 streaming 복구)
+개발 진행 중 (Block 7 완료: Neo4j 도메인 그래프 통합, GraphRAG + web_search fallback)
 
 ## Disclaimer
 
