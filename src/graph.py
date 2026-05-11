@@ -4,17 +4,17 @@ Graph layout (Block 7 Part 3):
 
                        classify_intent
                               |
-        +---------------------+-------------------+-------------------+
-        |                     |                   |                   |
-   emergency      medical_disclaimer       food_extraction     food_extraction
-        |                     |                   |                   |
-       END                   END             graph_lookup        graph_lookup
-                                                  |                   |
-                                                 rag                 rag
-                                                  |                   |
-                                            generate_or_fallback   generate_or_fallback
-                                                  |                   |
-                                                 END                 END
+        +---------------------+-------------------+
+        |                     |                   |
+   emergency      medical_disclaimer       food_extraction
+        |                     |                   |   (diet_advice / general 공통 수렴)
+       END                   END             graph_lookup
+                                                  |
+                                                 rag
+                                                  |
+                                            generate_or_fallback
+                                                  |
+                                                 END
 
 The diet_advice and general intents share the same retrieval + GraphRAG fan-in;
 the conditional edge sends both to ``food_extraction``. The fallback LLM
