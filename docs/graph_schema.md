@@ -65,11 +65,13 @@ Neo4j 5 위에 정의된 4개 서브그래프의 노드 라벨, 관계 타입, �
 
 | Label | Properties |
 |---|---|
-| `:Food` | `name`, `korean_name`, `category` (rice/noodle/meat/fruit/tuber/vegetable/processed/legume) |
-| `:Nutrient` | `name`, `type` (carb/protein/fat/fiber) |
-| `:GIClass` | `level` (low/medium/high), `gi_range` (string, e.g. "<=55", "56-69", ">=70") |
-| `:GlucoseImpact` | `pattern` (sharp_spike/gradual_rise/minimal), `description` |
-| `:DietaryRestriction` | `name` (예: lactose_intolerant, vegetarian, vegan, gluten_free) |
+| `:Food` | `name` (영어 snake_case), `display_name_ko` (한국어 표시명), `category` (rice/noodle/meat/fruit/tuber/vegetable/processed/legume) |
+| `:Nutrient` | `name` (한국어), `type` (carb/protein/fat/fiber) |
+| `:GIClass` | `level` (low/medium/high), `gi_range` ("<=55" / "56-69" / ">=70"), `display_name` (한국어), `description` (한국어) |
+| `:GlucoseImpact` | `pattern` (sharp_spike/gradual_rise/minimal), `display_name` (한국어), `description` (한국어) |
+| `:DietaryRestriction` | `name` (영어 snake_case), `display_name_ko` (한국어) |
+
+Block 7 Part 1.5 정규화 이후 `Food.korean_name` 은 폐기되었고, 동일한 역할은 `display_name_ko` 가 담당합니다.
 
 ### Relationships
 
@@ -98,7 +100,7 @@ Neo4j 5 위에 정의된 4개 서브그래프의 노드 라벨, 관계 타입, �
 
 | Label | Properties |
 |---|---|
-| `:LifecycleStage` | `name`, `stage_number`, `description` |
+| `:LifecycleStage` | `name` (영어 enum: UNDERSTANDING/SPIKE_CONTROL/HUNGER_CONTROL/FAT_BURN/MAINTENANCE), `display_name_ko` (한국어), `stage_number` (1-5), `description` (한국어) |
 
 ### Relationships
 
@@ -119,6 +121,60 @@ Neo4j 5 위에 정의된 4개 서브그래프의 노드 라벨, 관계 타입, �
 ### Counts
 
 - 5 lifecycle nodes, 다수의 RECOMMENDS/CAUTIONS/FOCUSES_ON 관계.
+
+## Internationalization (i18n) Strategy
+
+노드 타입을 세 카테고리로 나누어 서로 다른 i18n 패턴을 적용합니다. 카테고리 구분 기준은 "그 노드를 Cypher 쿼리에서 식별자로 쓰는가, 도메인 개념으로 쓰는가, 분류 enum으로 쓰는가" 입니다.
+
+### Category A — Identifier Nodes (English snake_case + Korean display)
+
+| Label | name | display_name_ko |
+|---|---|---|
+| `:Food` | `white_rice`, `mixed_grain_rice`, ... | `흰쌀밥`, `잡곡밥`, ... |
+| `:DietaryRestriction` | `lactose_intolerant`, `vegetarian`, ... | `유당불내증`, `채식주의`, ... |
+
+영어 식별자를 `name`으로 쓰면 Cypher 쿼리, Python 호출자, 테스트가 모두 ASCII-only 문자열로 작성됩니다. UTF-8 인코딩 이슈에 노출되지 않고, 코드 리뷰 시 노드를 한눈에 식별할 수 있습니다. 한국어 표시는 `display_name_ko` 라는 명시적 속성으로 분리합니다.
+
+### Category B — Domain Concept Nodes (Korean name)
+
+| Label | name 예시 |
+|---|---|
+| `:Behavior`, `:HormoneState`, `:MetabolicEffect`, `:EnergyState`, `:Symptom` | `잘못된 생활 습관`, `인슐린 과잉 분비`, `지방 축적과 인슐린 저항성` |
+| `:Nutrient` | `정제 탄수화물`, `복합 탄수화물`, `식이섬유` |
+| `:MetabolicIndicator`, `:AbdominalObesity`, `:MetabolicHealthAbnormality` | `고혈당`, `복부 비만`, `대사 건강 이상` |
+
+이 노드들은 코드에서 식별자로 직접 참조하지 않고, RAG/LLM 컨텍스트에서 자연어 의미 그대로 노출됩니다. 의학 용어를 영어로 매핑하면 의미 손실/맥락 이탈이 발생하므로 한국어 name을 유지합니다.
+
+### Category C — Classification Nodes (attribute-based)
+
+| Label | enum 속성 | 부가 속성 |
+|---|---|---|
+| `:GIClass` | `level` (low/medium/high) | `gi_range`, `display_name`, `description` |
+| `:GlucoseImpact` | `pattern` (sharp_spike/gradual_rise/minimal) | `display_name`, `description` |
+
+분류 노드는 enum-like 속성 (영어 소문자)으로 식별하고, 사용자 표시용 `display_name` 과 의미 해설용 `description` 을 별도로 둡니다. `name` 속성을 두지 않는 것은, 분류는 코드에서 enum 값으로만 다루고 자연어 표기는 prompt 생성 시점에만 필요하기 때문입니다.
+
+### LLM Context Strategy
+
+LangChain/LangGraph 노드에서 Neo4j 결과를 LLM prompt 문자열로 변환할 때 카테고리별로 다음 속성을 선택합니다.
+
+- Identifier 노드 (Food, DietaryRestriction): `display_name_ko`
+- Domain concept 노드 (Behavior, HormoneState, Nutrient, MetabolicIndicator 등): `name`
+- Classification 노드 (GIClass, GlucoseImpact): `display_name` + (필요 시) `description`
+
+이 규칙을 Python 도메인 어댑터(Block 7 Part 2 예정)에 함수로 캡슐화해서 노드 종류별 분기 로직이 prompt 빌더에 노출되지 않게 합니다.
+
+### Reproduction
+
+```bash
+docker cp scripts/normalize_graph.cypher welda-neo4j:/tmp/normalize_graph.cypher
+docker exec -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 \
+  -e JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8" \
+  welda-neo4j cypher-shell -u neo4j -p weldapassword \
+  -f /tmp/normalize_graph.cypher
+```
+
+`normalize_graph.cypher` 는 idempotent: 재실행 시 SET 은 같은 값을 다시 쓰는 no-op, REMOVE 는 이미 비어 있는 속성에 대해서도 안전합니다.
 
 ## Indexing Notes (Block 7 Part 2 이후)
 
