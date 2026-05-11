@@ -176,6 +176,40 @@ docker exec -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 \
 
 `normalize_graph.cypher` 는 idempotent: 재실행 시 SET 은 같은 값을 다시 쓰는 no-op, REMOVE 는 이미 비어 있는 속성에 대해서도 안전합니다.
 
+## LLM Fallback Strategy with Web Search
+
+도메인 그래프는 closed-world assumption 을 가지므로 신조어, 트렌드 음식, 지역 음식 같은 longtail 쿼리를 커버할 수 없습니다. Claude의 server-side `web_search` tool을 통해 실시간 정보로 보완합니다.
+
+### Architecture
+
+1. 사용자 질문이 식단 의도(diet_advice)일 때, LangGraph 노드가 `WeldaGraphDB.lookup_food` 로 그래프 lookup 을 수행합니다.
+2. **그래프 hit**: 도메인 데이터 (영양/GI/혈당 영향/대체 식품/식이제한)를 컨텍스트로 응답. 출처는 `graph:food:<name>` 형식.
+3. **그래프 miss**: `create_fallback_llm()` 으로 만든 ChatAnthropic (web_search tool 활성화)이 LLM 판단에 따라 자동으로 web search 를 호출. 출처는 검색된 URL 리스트.
+4. 두 경우 모두 동일한 통합 프롬프트 (`build_fallback_prompt`)를 사용. 그래프 컨텍스트가 비어 있으면 LLM 에게 "신조어/트렌드 음식이면 web_search 호출" 지시.
+5. 응답 후 `inject_fallback_disclaimer_if_missing` 로 disclaimer 누락을 코드 레벨에서 보강 (프롬프트 + 코드 이중 안전망).
+
+### Why No Client-Side Heuristic
+
+명세 초안에서 `detect_trend_signal` 같은 휴리스틱으로 web search 호출 여부를 미리 결정하는 안이 있었지만, 단순 글자 길이/ASCII 검사 휴리스틱이 일반 음식 쿼리도 trend 로 잘못 분류하는 false-positive 가 쉽게 발생했습니다 (예: "흰쌀밥 먹어도 돼?" 의 "먹어도" 가 trend 로 잡힘). LLM 에게 도메인 컨텍스트 + 질문을 함께 주고 자체 판단하게 하는 편이 더 정확하고, 모델 업그레이드 시 자동으로 개선됩니다.
+
+### Cost Management
+
+- Anthropic web_search 가격: $0.01/call + 토큰 비용
+- `max_uses=3` per turn 으로 호출 상한 설정 (모델이 한 응답 안에서 무한 검색하는 것 차단)
+- 그래프 hit 케이스에는 web_search 호출 비용 0 (LLM 이 그래프 컨텍스트만 보고 답변)
+- 실측 평균: 그래프 hit 70% 가정 시 호출당 약 $0.003 (web_search 30% × $0.01)
+
+### Persona-Driven Design
+
+웰다의 핵심 사용자 페르소나는 20-30대 여성 다이어트 사용자이며, SNS 트렌드 음식 노출 빈도가 높습니다. 신조어/트렌드 음식 질의 비율을 무시할 수 없어 fallback 전략이 retention 의 핵심 요소가 됩니다. 그래프 단독으로는 첫 한 달 안에 사용자가 "왜 이건 모르세요?" 경험을 반복하게 됩니다.
+
+### Production Extension Paths
+
+- 농촌진흥청 식품영양정보 DB API 통합 (한국 표준 식품 자동 확장)
+- Vision 모델 기반 사진 인식 (DeepSeek-VL → 자동 노드 매핑)
+- 사용자 기여 + 의료진 검증 워크플로우 (LangGraph human-in-the-loop)
+- 미커버 쿼리 로그 분석 → 우선순위 기반 그래프 확장 (반복 검색되는 trend 음식을 그래프로 promote)
+
 ## Indexing Notes (Block 7 Part 2 이후)
 
 - `Food(name)`, `MetabolicIndicator(name)` 에 unique constraint를 걸어 중복 생성 방지.
