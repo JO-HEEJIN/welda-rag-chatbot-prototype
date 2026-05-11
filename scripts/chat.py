@@ -8,6 +8,8 @@ from pydantic import ValidationError
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from langchain_core.messages import AIMessageChunk
+
 from src.conversation_memory import ConversationManager
 from src.graph import build_lifecycle_graph
 from src.lifecycle import LIFECYCLE_METADATA, LifecycleStage
@@ -78,6 +80,43 @@ def ask_string_list(prompt: str) -> list[str]:
     if not raw:
         return []
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def stream_graph_response(graph, initial_state: dict) -> tuple[str, list[str]]:
+    """Stream the LangGraph response token by token and return (text, sources).
+
+    ``stream_mode=["messages", "values"]`` runs both streams in one pass: the
+    ``messages`` payload yields AIMessageChunks from any LLM call inside the
+    graph (generate / medical_disclaimer), and the ``values`` payload yields
+    the full state after each node so we can pick up ``sources`` and, for the
+    emergency path that bypasses the LLM, the hardcoded ``final_answer``.
+    """
+    full_response = ""
+    final_state: dict | None = None
+    streamed_any_tokens = False
+
+    for stream_mode, payload in graph.stream(
+        initial_state, stream_mode=["messages", "values"]
+    ):
+        if stream_mode == "messages":
+            chunk, _metadata = payload
+            if isinstance(chunk, AIMessageChunk) and chunk.content:
+                print(chunk.content, end="", flush=True)
+                full_response += chunk.content
+                streamed_any_tokens = True
+        elif stream_mode == "values":
+            final_state = payload
+
+    print()
+
+    if not streamed_any_tokens and final_state:
+        answer = final_state.get("final_answer", "")
+        if answer:
+            print(answer)
+            full_response = answer
+
+    sources = list(final_state.get("sources") or []) if final_state else []
+    return full_response, sources
 
 
 def ask_lifecycle_stage() -> LifecycleStage:
@@ -194,24 +233,23 @@ def main() -> None:
                 print(f"\n[단계 변경됨] {LIFECYCLE_METADATA[stage].description}\n")
             continue
 
-        result = graph.invoke(
+        print()
+        full_response, sources = stream_graph_response(
+            graph,
             {
                 "user_question": question,
                 "lifecycle_stage": stage.value,
                 "messages": memory.get_history(),
-            }
+            },
         )
 
-        print()
-        print(result["final_answer"])
-        sources = result.get("sources") or []
         if sources:
             print(f"\n참고: {', '.join(sources)}\n")
         else:
             print()
 
         memory.add_user_message(question)
-        memory.add_ai_message(result["final_answer"])
+        memory.add_ai_message(full_response)
 
     print("[chat] 대화를 종료합니다. 건강하십시오.")
 

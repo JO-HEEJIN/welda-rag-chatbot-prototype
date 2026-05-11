@@ -88,16 +88,23 @@ python scripts/chat.py
 pytest tests/
 ```
 
-## Streaming Response
+## Streaming Response (LangGraph)
 
-응답을 토큰 단위로 스트리밍합니다. LCEL 체인은 `.stream()` 메서드를 자동으로 제공하므로 별도 구현 없이 즉시 활용했습니다.
+LangGraph state machine으로 전환한 뒤에도 토큰 단위 스트리밍을 유지하기 위해 `stream_mode=["messages", "values"]` 듀얼 모드를 사용합니다. `messages` 스트림은 그래프 내부 LLM 노드(generate / medical_disclaimer)에서 발생하는 AIMessageChunk를 토큰 단위로 yield하고, `values` 스트림은 각 노드 종료 시점의 전체 state를 yield해 `sources` 와 (LLM을 거치지 않는 emergency 경로의) `final_answer` 를 캡처할 수 있게 합니다.
 
 ```python
-for chunk in chain.stream({"question": q, "chat_history": h}):
-    print(chunk, end="", flush=True)
+from langchain_core.messages import AIMessageChunk
+
+for stream_mode, payload in graph.stream(state, stream_mode=["messages", "values"]):
+    if stream_mode == "messages":
+        chunk, _metadata = payload
+        if isinstance(chunk, AIMessageChunk) and chunk.content:
+            print(chunk.content, end="", flush=True)
+    elif stream_mode == "values":
+        final_state = payload  # sources / emergency fallback final_answer 추출용
 ```
 
-`scripts/chat.py`는 위 패턴을 `stream_with_sources()` 헬퍼로 감싸 토큰을 흘려보낸 뒤 마지막에 검색된 소스 파일 목록을 함께 출력합니다.
+`scripts/chat.py`의 `stream_graph_response()` 헬퍼가 이 패턴을 구현합니다. 토큰을 스트리밍하지 않는 emergency 노드는 `final_state["final_answer"]` 를 fallback으로 한 번에 출력해 UX 일관성을 유지합니다.
 
 ## Observability (LangSmith Tracing)
 
@@ -253,7 +260,7 @@ LCEL은 직선 파이프라인에 적합한 반면, 라이프사이클·의도�
 
 ## Status
 
-개발 진행 중 (Block 6 완료: LangGraph 라이프사이클 state machine, intent routing, emergency/medical 게이트)
+개발 진행 중 (Block 6.5 완료: LangGraph 위에서 토큰 단위 streaming 복구)
 
 ## Disclaimer
 
