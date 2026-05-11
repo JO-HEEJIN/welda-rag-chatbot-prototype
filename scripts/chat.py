@@ -150,9 +150,15 @@ def main() -> None:
     print()
     print("=" * 60)
     print("준비가 완료되었습니다. 혈당 관리에 대해 질문해 주십시오.")
-    print("예시: '아침에 흰쌀밥 먹어도 되나요?'")
+    print("예시: '아침에는 마라탕 먹어도 되지 않나요?'")
     print("명령: history  profile  stage  reset  exit")
     print("=" * 60)
+    print("\n사용 가능한 명령어:")
+    print("  exit / quit  - 대화를 종료합니다")
+    print("  reset        - 대화 메모리를 초기화합니다")
+    print("  history      - 지금까지의 대화 기록을 봅니다")
+    print("  profile      - 현재 사용자 프로필을 확인합니다")
+    print()
 
     while True:
         try:
