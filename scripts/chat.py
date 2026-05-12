@@ -1,20 +1,98 @@
 """CLI chat interface for the Welda RAG chatbot powered by the lifecycle graph."""
 
+import itertools
+import logging
+import os
 import sys
+import threading
+import time
 from pathlib import Path
 
-from pydantic import ValidationError
+# Quiet the noisy HuggingFace Hub "unauthenticated" warning at the source —
+# environment variables must be set BEFORE huggingface_hub is imported, and
+# logger levels are then tightened for the loaders that still emit warnings.
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+for noisy in ("huggingface_hub", "huggingface_hub.utils._http", "transformers"):
+    logging.getLogger(noisy).setLevel(logging.ERROR)
+
+from pydantic import ValidationError  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from langchain_core.messages import AIMessageChunk
+from langchain_core.messages import AIMessageChunk  # noqa: E402
 
-from src.conversation_memory import ConversationManager
-from src.graph import build_lifecycle_graph
-from src.lifecycle import LIFECYCLE_METADATA, LifecycleStage
-from src.rag_chain import load_vector_store
-from src.user_profile import UserProfile
+from src.conversation_memory import ConversationManager  # noqa: E402
+from src.graph import build_lifecycle_graph  # noqa: E402
+from src.lifecycle import LIFECYCLE_METADATA, LifecycleStage  # noqa: E402
+from src.rag_chain import load_vector_store  # noqa: E402
+from src.user_profile import UserProfile  # noqa: E402
+
+
+SPINNER_FRAMES = ["✽", "✾", "✿", "❀", "❁", "❀", "✿", "✾"]
+
+NODE_LABELS: dict[str, str] = {
+    "classify_intent": "의도 분류 중",
+    "food_extraction": "음식 식별 중",
+    "graph_lookup": "도메인 그래프 조회 중",
+    "rag": "관련 문서 검색 중",
+    "generate": "응답 생성 중 (필요 시 웹 검색 포함)",
+    "emergency": "응급 안내 준비 중",
+    "medical_disclaimer": "의료 정보 정리 중",
+}
+
+
+class Spinner:
+    """Background spinner that overwrites its line until ``stop()`` is called.
+
+    Designed for the CLI's "before the first token" gap: while ``graph.stream``
+    is still inside non-LLM nodes (intent classification, graph lookup, RAG,
+    or the early portion of generate before tokens stream), this keeps the
+    user from seeing a blank screen. The label can be updated mid-flight as
+    LangGraph fires ``updates`` events for each completed node.
+    """
+
+    def __init__(self, label: str = "준비 중"):
+        self._label = label
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._active = False
+
+    def set_label(self, label: str) -> None:
+        with self._lock:
+            self._label = label
+
+    def start(self) -> None:
+        if self._active:
+            return
+        self._stop.clear()
+        self._active = True
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if not self._active:
+            return
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=0.3)
+        self._thread = None
+        self._active = False
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
+
+    def _run(self) -> None:
+        frames = itertools.cycle(SPINNER_FRAMES)
+        while not self._stop.is_set():
+            with self._lock:
+                label = self._label
+            frame = next(frames)
+            sys.stdout.write(f"\r\033[K{frame} {label}…")
+            sys.stdout.flush()
+            time.sleep(0.12)
 
 DIET_GOAL_CHOICES = {
     "1": "weight_loss",
@@ -102,31 +180,51 @@ def _chunk_text(content) -> str:
 
 
 def stream_graph_response(graph, initial_state: dict) -> tuple[str, list[str]]:
-    """Stream the LangGraph response token by token and return (text, sources).
+    """Stream the LangGraph response with a status spinner until the first token.
 
-    ``stream_mode=["messages", "values"]`` runs both streams in one pass: the
-    ``messages`` payload yields AIMessageChunks from any LLM call inside the
-    graph (generate / medical_disclaimer), and the ``values`` payload yields
-    the full state after each node so we can pick up ``sources`` and, for the
-    emergency path that bypasses the LLM, the hardcoded ``final_answer``.
+    ``stream_mode=["updates", "messages", "values"]`` runs three streams in one
+    pass: ``updates`` tells us which node just finished (so we can refresh the
+    spinner label), ``messages`` yields the LLM token chunks (so we can stop
+    the spinner the moment the first text arrives), and ``values`` yields each
+    node's resulting state (so we can pick up ``sources`` and the hardcoded
+    emergency ``final_answer``).
+
+    Spinner / streaming handoff: while a non-LLM node is running, the spinner
+    line is overwritten in place with the current node's Korean label. Once
+    the first text token arrives, the spinner clears itself and the rest of
+    the response prints normally. This matches what users expect from
+    agentic CLIs — visible progress during the long graph-lookup + web-search
+    stretches that would otherwise look frozen for 20+ seconds.
     """
     full_response = ""
     final_state: dict | None = None
     streamed_any_tokens = False
+    spinner = Spinner(label="준비 중")
+    spinner.start()
 
-    for stream_mode, payload in graph.stream(
-        initial_state, stream_mode=["messages", "values"]
-    ):
-        if stream_mode == "messages":
-            chunk, _metadata = payload
-            if isinstance(chunk, AIMessageChunk):
-                text = _chunk_text(chunk.content)
-                if text:
-                    print(text, end="", flush=True)
-                    full_response += text
-                    streamed_any_tokens = True
-        elif stream_mode == "values":
-            final_state = payload
+    try:
+        for stream_mode, payload in graph.stream(
+            initial_state, stream_mode=["updates", "messages", "values"]
+        ):
+            if stream_mode == "updates":
+                if isinstance(payload, dict):
+                    for node_name in payload:
+                        label = NODE_LABELS.get(node_name, node_name)
+                        spinner.set_label(label)
+            elif stream_mode == "messages":
+                chunk, _metadata = payload
+                if isinstance(chunk, AIMessageChunk):
+                    text = _chunk_text(chunk.content)
+                    if text:
+                        if not streamed_any_tokens:
+                            spinner.stop()
+                        print(text, end="", flush=True)
+                        full_response += text
+                        streamed_any_tokens = True
+            elif stream_mode == "values":
+                final_state = payload
+    finally:
+        spinner.stop()
 
     print()
 

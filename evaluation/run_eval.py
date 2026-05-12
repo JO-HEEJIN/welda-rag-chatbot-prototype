@@ -15,17 +15,25 @@ when several retrieved chunks come from the same relevant file.
 """
 
 import json
+import logging
+import os
 import shutil
 import sys
 import time
 from pathlib import Path
 
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+for noisy in ("huggingface_hub", "huggingface_hub.utils._http", "transformers"):
+    logging.getLogger(noisy).setLevel(logging.ERROR)
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from langchain_chroma import Chroma
-from langchain_core.documents import Document
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_chroma import Chroma  # noqa: E402
+from langchain_core.documents import Document  # noqa: E402
+from langchain_huggingface import HuggingFaceEmbeddings  # noqa: E402
 
 from src.load_documents import load_and_split_documents
 

@@ -1,13 +1,23 @@
 """Build the Chroma index from welda_knowledge/. Run once before chatting."""
 
+import logging
+import os
 import sys
 from pathlib import Path
+
+# Silence the HuggingFace Hub "unauthenticated request" warning before any
+# of the model loaders import it.
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+for noisy in ("huggingface_hub", "huggingface_hub.utils._http", "transformers"):
+    logging.getLogger(noisy).setLevel(logging.ERROR)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.build_index import build_vector_store
-from src.load_documents import load_and_split_documents
+from src.build_index import build_vector_store  # noqa: E402
+from src.load_documents import load_and_split_documents  # noqa: E402
 
 
 def main() -> None:
