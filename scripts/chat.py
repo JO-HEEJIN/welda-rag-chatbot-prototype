@@ -35,6 +35,7 @@ SPINNER_FRAMES = ["✽", "✾", "✿", "❀", "❁", "❀", "✿", "✾"]
 
 NODE_LABELS: dict[str, str] = {
     "classify_intent": "의도 분류 중",
+    "extract_constraints": "사용자 규칙 추출 중",
     "food_extraction": "음식 식별 중",
     "graph_lookup": "도메인 그래프 조회 중",
     "rag": "관련 문서 검색 중",

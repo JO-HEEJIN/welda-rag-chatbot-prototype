@@ -289,3 +289,83 @@ def create_fallback_llm(
 1. **max_tokens 는 응답 풍부도 * fallback 케이스 * disclaimer 분량 의 합으로 잡아야 한다**: fallback 케이스는 그래프 hit 보다 응답이 통상 더 깁니다.
 2. **응답 truncation 은 silent failure 다**: API 가 에러를 던지지 않고 정중하게 잘린 텍스트를 돌려줍니다. `finish_reason="max_tokens"` 같은 메타데이터를 응답 검증 단계에서 명시적으로 체크하는 게 안전합니다 (향후 보강).
 3. **시연이 단위 테스트보다 길어야 한다**: 단위 테스트의 짧은 mock 응답은 1024 토큰에 잘 들어맞아 truncation 을 노출하지 않습니다. 실제 사용자 쿼리로 한 번 돌려봐야 잡힙니다.
+
+---
+
+## 2026-05-12 — chat_history 가 generate_or_fallback 프롬프트에 안 들어가 사용자 지시가 무시됨
+
+### 발생 위치
+`src/nodes.py::generate_or_fallback_node` + `src/graph_fallback.py::build_fallback_prompt` (Block 7 Part 3 에서 LCEL generate 노드를 GraphRAG 통합 노드로 교체할 때 발생한 회귀).
+
+### 증상
+
+긴 멀티턴 대화 중 사용자가 다음과 같이 명시적으로 지시했습니다.
+
+> 사용자: "GL과 GI가 뭐야? 너 왜 어렵게 말해? 앞으로 이런 단어 쓰지마"
+> 코치: "앞으로는 이 두 단어 대신 '혈당 올리는 속도', '실제 혈당 영향' 이런 표현으로 설명해 드리겠습니다." (좋은 답변)
+
+그러나 직후 턴부터 코치가 다시 GI 라는 용어를 그대로 사용했고, 사용자가 항의하자 다음과 같이 답했습니다.
+
+> 코치: "이전 대화 내역이 이 시스템에는 전달되지 않아, 어떤 맥락에서 GI 용어를 쓰지 말라고 하셨는지 확인이 어렵습니다."
+
+LLM hallucination 이 아니라 실제로 prompt 에 chat_history 가 없었다는 자백입니다.
+
+### 진단
+
+`generate_or_fallback_node` 의 prompt 빌더 호출:
+
+```python
+prompt = build_fallback_prompt(
+    query=state["user_question"],
+    user_profile=user_profile_str,
+    lifecycle_context=lifecycle_context,
+    graph_context=combined_context,
+)
+```
+
+`chat_history` 가 전달되지 않습니다. 그리고 `build_fallback_prompt` 의 시그니처에 `chat_history` 파라미터 자체가 없습니다.
+
+비교용으로 `medical_disclaimer_node` 는 `format_chat_history(history)` 를 거쳐 prompt 에 정상 주입합니다. 같은 흐름이 generate_or_fallback 에만 빠진 회귀였습니다.
+
+Block 3 에서 만든 `ConversationManager` → state["messages"] → `format_chat_history` → prompt 의 `{chat_history}` 자리표시자 경로가 Block 7 Part 3 에서 generate 노드를 GraphRAG 통합 노드로 갈아치울 때 단절됐습니다. 새 노드는 이전 노드와 다른 prompt 빌더(`build_fallback_prompt`)를 쓰는데 이 빌더에 chat_history 자리표시자가 처음부터 없었습니다.
+
+### 옵션 검토
+
+세 가지 해결안을 비교했습니다.
+
+**옵션 1 — chat_history 만 prompt 에 단순 주입**
+- 변경 최소, medical_disclaimer 와 일관
+- 단점: LLM 이 매 턴마다 chat_history 에서 사용자 constraint("GI 쓰지마") 를 재추론. 대화가 길어지거나 constraint 가 묻히면 놓침. 옵션 3 권장으로 처음 제안했으나 사용자가 정확히 지적: "옵션 3 도 LLM 판단을 믿어야 해서 hallucination 이 생길 거다."
+
+**옵션 2 — user_constraints state 필드로 추출/유지 (채택)**
+- 별도 추출 노드가 사용자 발화에서 영구적 스타일/금지 규칙을 짧은 list 로 뽑아 state 에 누적
+- 모든 LLM prompt 상단에 명시적 `[사용자 규칙]` 섹션으로 박힘
+- chat_history 도 함께 주입 (대화 reference 용)
+- 장점: constraint 가 짧고 명시적이라 LLM 이 매 턴 정확히 따름
+- 단점:
+    1. 추출 false negative (암묵적 지시 못 잡음)
+    2. 추출 false positive (일회성 요청을 영구로 잘못 잡음)
+    3. constraint 충돌/stale (사용자가 마음 바꾸면 list 누적되면서 모순)
+- MVP 는 단순 누적, 충돌 해결은 향후 보강
+
+**옵션 3 — 옵션 1 + system instruction 한 줄 강조**
+- 옵션 1 + "이전 대화에서 사용자가 명시한 선호도를 반드시 따르세요" 한 줄
+- 코드 변경 최소이지만 결국 LLM judgment 의존
+
+채택: 옵션 2 + chat_history 둘 다 주입. 역할 분리:
+- chat_history → 대화 reference ("방금 추천한 메뉴 중에서" 같은 anaphora)
+- user_constraints → 지속적 스타일/금지 규칙 압축본 (prompt 상단 강조)
+
+### 해결 디자인
+
+1. `AgentState.user_constraints: list[str]` 추가, `operator.add` reducer 로 누적.
+2. `extract_user_constraints_node` 신규: 사용자 마지막 발화를 Haiku 4.5 에 넘겨 Pydantic structured output 으로 constraint list 추출. classify_intent 직후 위치, 모든 분기에서 작동.
+3. `build_fallback_prompt` 와 medical_disclaimer prompt 둘 다 `chat_history` + `user_constraints` 두 인자 받도록 확장. 프롬프트 상단에 `[사용자가 명시한 규칙 — 반드시 따르세요]` 섹션.
+4. `generate_or_fallback_node` 와 `medical_disclaimer_node` 가 state 에서 messages + user_constraints 추출해 prompt 빌더에 전달.
+
+### 교훈
+
+1. **공유 state 의 새 소비 노드는 자동으로 따라가지 않는다**: Block 3 에서 만든 ConversationManager → state["messages"] 경로가 정상 동작했음에도, Block 7 Part 3 에서 새 generate 노드는 이 state 를 prompt 에 주입하는 명시적 코드가 없으면 자동으로 활용되지 않습니다. 모듈을 추가할 때마다 기존 공유 state 의 모든 필드가 새 노드에서도 활용되는지 매번 검증해야 합니다.
+2. **LLM 의 자백 메시지는 결정적 단서**: "이전 대화 내역이 이 시스템에 전달되지 않아" 같은 메타 발화는 hallucination 이 아닐 가능성이 높습니다. 코드 추적의 시작점으로 신뢰할 수 있습니다.
+3. **이전 대화 + 사용자 규칙은 역할이 다르다**: chat_history 는 reference 유지에, user_constraints 는 스타일 강제에. 둘을 하나의 chat_history 로 합치면 constraint 가 묻혀 LLM 이 놓치기 쉽습니다. 분리 + 압축 + 강조가 효과적입니다.
+4. **옵션 비교를 사용자와 함께 하면 더 좋은 디자인이 나온다**: 처음엔 옵션 3 (LLM judgment) 을 권장했지만 사용자가 "LLM 판단 의존이 위험" 지점을 지적해 옵션 2 (state-explicit) 로 결정. 시니어 시그널.

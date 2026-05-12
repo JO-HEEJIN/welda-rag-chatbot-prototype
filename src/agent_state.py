@@ -29,3 +29,6 @@ class AgentState(TypedDict, total=False):
     graph_found: bool
     graph_sources: list[str]
     used_web_search: bool
+
+    # Block 8 user-stated constraints (accumulated across turns)
+    user_constraints: Annotated[list[str], add]

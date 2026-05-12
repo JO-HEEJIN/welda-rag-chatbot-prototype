@@ -6,7 +6,9 @@ existing LCEL components; nodes only orchestrate which component runs and
 shape the prompt input.
 """
 
+from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from pydantic import BaseModel, Field
 
 from src.agent_state import AgentState
 from src.graph_db import WeldaGraphDB
@@ -21,6 +23,49 @@ from src.graph_fallback import (
 from src.lifecycle import LIFECYCLE_METADATA, LifecycleStage, get_stage_metadata
 from src.rag_chain import RAGChainComponents, format_chat_history
 from src.user_profile import UserProfile
+
+
+class ConstraintExtraction(BaseModel):
+    """Structured output for the constraint extractor.
+
+    Empty ``constraints`` list means the user's last utterance contained no
+    standing style / forbidden-term rule (just a question, an answer, or a
+    one-off formatting request).
+    """
+
+    constraints: list[str] = Field(default_factory=list)
+
+
+CONSTRAINT_EXTRACTION_PROMPT = """사용자의 마지막 발화를 분석해 앞으로 챗봇 응답에 영구적으로 적용할 스타일/금지 규칙을 추출하세요.
+
+추출 기준:
+- 영구적·지속적 지시만 추출하세요. 예: "앞으로 GI 같은 용어 쓰지마", "쉬운 말로 답해", "앞으로 짧게 답해", "반말로 답해줘"
+- 일회성 요청은 무시하세요. 예: "이번엔 표로 정리해줘", "지금 답변 더 길게 해줘"
+- 정보 공유는 무시하세요. 예: "의사가 GI 라는 말 쓰지 말라고 했대"
+- 모호하거나 추측이 필요한 경우 추출하지 마세요. 예: "이거 너무 어려워" (선호도 암시는 있지만 명시적 지시는 아님)
+- 단순 질문이나 답변이면 빈 list 를 반환하세요.
+
+추출한 규칙은 명령형 한국어 한 줄로 짧게 표현하세요. 예: "GI 같은 전문 용어 사용 금지", "쉬운 말로 답변하기".
+
+사용자 발화:
+{utterance}
+
+위 발화에서 추출할 영구적 규칙을 list 로 반환하세요. 규칙이 없으면 빈 list 를 반환하세요."""
+
+
+_constraint_extractor: ChatAnthropic | None = None
+
+
+def _get_constraint_extractor():
+    """Lazy-init the Haiku extractor. Reused across invocations for warmth."""
+    global _constraint_extractor
+    if _constraint_extractor is None:
+        _constraint_extractor = ChatAnthropic(
+            model="claude-haiku-4-5",
+            temperature=0.0,
+            max_tokens=256,
+        ).with_structured_output(ConstraintExtraction)
+    return _constraint_extractor
 
 EMERGENCY_KEYWORDS = (
     "의식 잃을",
@@ -83,6 +128,29 @@ def classify_intent_node(state: AgentState) -> dict:
     if any(kw in question for kw in DIET_KEYWORDS):
         return {"intent": "diet_advice"}
     return {"intent": "general"}
+
+
+def extract_user_constraints_node(state: AgentState) -> dict:
+    """Extract standing style / forbidden-term rules from the latest utterance.
+
+    Sent to Haiku 4.5 with a structured-output schema so the response is always
+    a typed list[str] (empty when no rule was stated). The list is appended to
+    ``state["user_constraints"]`` via the AgentState ``add`` reducer, so all
+    later LLM prompts see the accumulated rule set at the top of their
+    instructions. Network failures degrade gracefully to no-op (empty list).
+    """
+    utterance = state["user_question"]
+    try:
+        extractor = _get_constraint_extractor()
+        result: ConstraintExtraction = extractor.invoke(
+            CONSTRAINT_EXTRACTION_PROMPT.format(utterance=utterance)
+        )
+        new_rules = [c.strip() for c in (result.constraints or []) if c and c.strip()]
+    except Exception as exc:
+        print(f"[extract_user_constraints] 추출 실패, 건너뜀: {exc}")
+        return {"user_constraints": []}
+
+    return {"user_constraints": new_rules}
 
 
 def rag_node(state: AgentState, components: RAGChainComponents) -> dict:
@@ -166,11 +234,16 @@ def medical_disclaimer_node(
     user_context = (
         user_profile.to_prompt_context() if user_profile is not None else "프로필 정보 없음"
     )
+    constraints = state.get("user_constraints") or []
+    constraints_block = (
+        "\n".join(f"- {c}" for c in constraints) if constraints else "(없음)"
+    )
     prompt_input = {
         "user_context": user_context,
         "chat_history": format_chat_history(history),
         "context": retrieval_state["context"],
         "question": state["user_question"],
+        "user_constraints": constraints_block,
     }
 
     answer = medical_gen.invoke(prompt_input)
@@ -273,12 +346,18 @@ def generate_or_fallback_node(
         parts.append(f"[일반 도메인 문서]\n{rag_ctx}")
     combined_context = "\n\n".join(parts)
 
+    history = _extract_history(state)
+    chat_history_text = format_chat_history(history)
+    user_constraints = list(state.get("user_constraints") or [])
+
     llm = create_fallback_llm(max_uses=3)
     prompt = build_fallback_prompt(
         query=state["user_question"],
         user_profile=user_profile_str,
         lifecycle_context=lifecycle_context,
         graph_context=combined_context,
+        chat_history=chat_history_text,
+        user_constraints=user_constraints,
     )
     response = llm.invoke(prompt)
 

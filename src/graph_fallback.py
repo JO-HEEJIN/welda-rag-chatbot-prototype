@@ -124,24 +124,49 @@ def inject_fallback_disclaimer_if_missing(response: str, used_fallback: bool) ->
     return f"{response}\n\n{GRAPH_FALLBACK_DISCLAIMER}"
 
 
+def _format_user_constraints(constraints: list[str] | tuple[str, ...] | None) -> str:
+    """Bullet-list of user-stated constraints, or a sentinel when none."""
+    items = [c.strip() for c in (constraints or []) if c and c.strip()]
+    if not items:
+        return "(없음)"
+    return "\n".join(f"- {item}" for item in items)
+
+
 def build_fallback_prompt(
     query: str,
     user_profile: str,
     lifecycle_context: str,
     graph_context: str,
+    chat_history: str = "",
+    user_constraints: list[str] | tuple[str, ...] | None = None,
 ) -> str:
     """Unified prompt: graph context (possibly empty) + delegation to web_search.
 
-    When graph_context is non-empty, the model is told to prefer it. When
+    Adds two cross-turn surfaces on top of the per-turn context:
+
+    - ``user_constraints``: explicit "from now on do/don't" rules the user has
+      stated across past turns. Rendered as a top-of-prompt bullet list so the
+      model can't miss them.
+    - ``chat_history``: pre-formatted dialogue text for anaphora resolution
+      ("앞서 추천한 메뉴 중에서" 같은 reference).
+
+    When ``graph_context`` is non-empty, the model is told to prefer it. When
     empty, the model is told the food/concept is outside the domain graph and
     should use ``web_search`` for trend / slang / regional items. The model
     decides — there is no client-side heuristic.
     """
+    constraints_block = _format_user_constraints(user_constraints)
     parts = [
         "당신은 웰다의 혈당 관리 코치입니다.",
         "",
+        "[사용자가 명시한 규칙 — 반드시 따르세요]",
+        constraints_block,
+        "",
         f"사용자 프로필: {user_profile}",
         f"라이프사이클 단계: {lifecycle_context}",
+        "",
+        "이전 대화:",
+        chat_history.strip() if chat_history and chat_history.strip() else "(없음)",
         "",
     ]
 
@@ -170,6 +195,7 @@ def build_fallback_prompt(
             f"사용자 질문: {query}",
             "",
             "답변 시 주의사항:",
+            "- 위 [사용자가 명시한 규칙]을 절대 어기지 마세요. 사용자가 한 번이라도 'X 쓰지마' 라고 했으면 X 를 다시 쓰지 마세요.",
             "- 합쇼체로 답변하세요 (-습니다/-십니다)",
             "- 이모지 사용 금지",
             "- 사용자 라이프사이클 단계를 의식한 답변",
