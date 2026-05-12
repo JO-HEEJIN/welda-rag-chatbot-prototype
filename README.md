@@ -12,6 +12,7 @@ LangChain LCEL 기반의 헬스케어 도메인 RAG 챗봇 프로토타입입니
 - LangGraph state machine: intent routing + 5단계 라이프사이클
 - Neo4j 도메인 그래프 GraphRAG (multi-hop traversal, 43 노드/92 관계)
 - Anthropic server-side `web_search` fallback (closed-world 한계 보완)
+- 사용자 발화 규칙 영구화 (`extract_constraints` 노드, Haiku 4.5 + add reducer 누적)
 - 의료 게이트: emergency 즉시 우회 + medical_advice 의료진 권유 강제
 - 사용자 프로필 기반 개인화 (Pydantic 검증)
 - 멀티턴 대화 메모리 (sliding window, max 10턴)
@@ -22,7 +23,7 @@ LangChain LCEL 기반의 헬스케어 도메인 RAG 챗봇 프로토타입입니
 
 ## Architecture
 
-전체 시스템은 두 층으로 구성됩니다. **LangGraph state machine 이 바깥 wrapper** 로 의도 분류와 라이프사이클 단계별 분기를 담당하고, **LCEL RAG 체인이 그래프 노드 내부에서 retrieval 도구로 호출**됩니다. Block 7 부터 Neo4j 도메인 그래프와 Anthropic web_search 가 generate 노드에 통합됐습니다.
+전체 시스템은 두 층으로 구성됩니다. **LangGraph state machine 이 바깥 wrapper** 로 의도 분류·라이프사이클 단계별 분기·사용자 규칙 누적을 담당하고, **LCEL RAG 체인이 그래프 노드 내부에서 retrieval 도구로 호출**됩니다. Block 7 부터 Neo4j 도메인 그래프와 Anthropic web_search 가 `generate_or_fallback` 노드에 통합됐고, Block 8 부터는 `classify_intent` 와 fan-out 사이에 `extract_constraints` 노드가 박혀 사용자가 명시한 표준 규칙을 매 턴 누적 후 모든 LLM 프롬프트 최상단에 주입합니다.
 
 전체 흐름은 아래 GraphRAG Flow 섹션 다이어그램을 참고하시고, 이 절에서는 RAG 체인 내부와 컴포넌트 선택을 다룹니다.
 
@@ -198,12 +199,14 @@ LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 
 이 구조 덕분에 LLM 응답 품질 문제가 발생했을 때 retriever 결과 / prompt 채우기 / LLM 응답 중 어느 단계가 원인인지 즉시 식별할 수 있습니다.
 
-## GraphRAG Flow (Block 7)
+## GraphRAG Flow (Block 7 + Block 8)
 
-LangGraph state machine이 intent에 따라 분기하고, 식단 의도일 때 Neo4j 도메인 그래프 + Chroma vector RAG + (필요 시) Anthropic web_search 를 결합합니다.
+LangGraph state machine이 intent에 따라 분기하고, 식단 의도일 때 Neo4j 도메인 그래프 + Chroma vector RAG + (필요 시) Anthropic web_search 를 결합합니다. Block 8 부터는 모든 분기 앞에 `extract_constraints` 노드가 박혀 사용자가 명시한 규칙을 매 턴 누적합니다.
 
 ```
-                       classify_intent
+                       classify_intent  (rule-based)
+                              |
+                     extract_constraints  (Haiku 4.5, append to state["user_constraints"])
                               |
         +---------------------+-------------------+
         |                     |                   |
@@ -219,6 +222,7 @@ LangGraph state machine이 intent에 따라 분기하고, 식단 의도일 때 N
 ```
 
 - `classify_intent` 는 룰 기반 키워드 분류 (emergency > medical > diet > general 우선순위).
+- `extract_constraints` 는 매 사용자 발화에서 명시적 표준 규칙 (`"앞으로 X 쓰지마"` 등) 만 추출해 `state["user_constraints"]` 에 누적합니다. AgentState 의 `add` reducer 가 턴 간 누적을 보장하고, 모든 하위 LLM 프롬프트(`medical_disclaimer`, `generate_or_fallback`) 최상단에 `[사용자가 명시한 규칙 — 반드시 따르세요]` 섹션으로 렌더링됩니다.
 - `diet_advice` 와 `general` intent 는 동일 fan-in 으로 `food_extraction` 에 수렴합니다 (conditional edge 가 두 값 모두 같은 노드를 가리킴).
 - `generate_or_fallback` 내부의 LLM 에는 Anthropic server-side `web_search` tool 이 attach 되어 있어, 그래프/RAG 컨텍스트가 부족하다고 모델이 판단하면 자동으로 web 검색을 호출합니다 (closed-world 한계 보완).
 - 응답에 disclaimer 가 누락되면 코드 레벨에서 강제 주입됩니다.
@@ -242,6 +246,59 @@ LangGraph state machine이 intent에 따라 분기하고, 식단 의도일 때 N
 - 그래프 hit: `graph:food:white_rice` 같은 식별자
 - RAG: 마크다운 파일명 (e.g. `04_korean_foods_glucose.md`)
 - web_search: citation URL (namu.wiki, foodpengu.in 등)
+
+## User-Stated Constraints (Block 8)
+
+시연 중 발생한 회귀를 직접 해결한 기능입니다. 사용자가 "앞으로 GI 라는 단어 쓰지마" 같은 표준 규칙을 한 번 지시하면, 이후 모든 턴에서 그 규칙이 LLM 프롬프트에 반드시 포함되어 모델이 규칙을 잊지 않도록 강제합니다.
+
+### Problem
+
+기존 메모리는 단순 sliding window (`ConversationManager`, max 10턴) 였습니다. 사용자 발화는 그대로 history 에 누적되지만, LLM 이 그 안에서 *어떤 발화가 표준 규칙인지* 알아서 식별·준수해야 하는 구조였습니다. 실제 시연에서 모델이 다음 턴에 규칙을 무시하는 회귀가 관찰되었습니다.
+
+> 시연 사례: 1턴 "앞으로 GI 라는 단어 쓰지마" → 2턴 "흰쌀밥 먹어도 돼요?" → 응답에 GI 다시 등장.
+
+### Design
+
+별도 노드로 구조적 게이트를 만듭니다.
+
+1. `extract_user_constraints_node` (`src/nodes.py`): Haiku 4.5 structured output 으로 사용자 발화에서 **표준 규칙만** 추출 (`"앞으로 X 하지마"`, `"항상 Y 형식으로"` 등). 일회성 요청 (`"이번엔 표로"`) 은 제외하도록 프롬프트로 지시.
+2. `AgentState.user_constraints: Annotated[list[str], add]`: LangGraph `add` reducer 가 턴 간 누적을 자동 처리. 노드는 *추가* 만 반환하고 누적 책임은 framework 가 짐.
+3. 모든 LLM 프롬프트(`MEDICAL_DISCLAIMER_PROMPT_TEMPLATE`, fallback prompt) 최상단에 `[사용자가 명시한 규칙 — 반드시 따르세요]` 섹션과 강조 instruction `"사용자가 한 번이라도 'X 쓰지마' 라고 했으면 X 를 다시 쓰지 마세요"` 박힘.
+
+### Why an LLM extractor (not regex)
+
+`"GI"`, `"GL"`, `"인슐린"` 등 도메인 용어 + 한국어 어순 변형 + 완곡 표현 (`"~ 안 썼으면 좋겠어"`) 까지 커버하려면 regex 가 폭발합니다. Haiku 4.5 호출 비용이 매 턴 약 $0.0001 수준이라 trade-off 가 명확합니다.
+
+### Verification
+
+`test_constraints_accumulate_across_turns` 한 테스트가 핵심 가치를 직접 측정합니다.
+
+```python
+# 1턴: 규칙 명시
+result1 = graph.invoke({"user_question": "앞으로 GI 라는 단어 쓰지마. 알겠지?", ...})
+constraints_after_t1 = result1["user_constraints"]
+assert any("GI" in c for c in constraints_after_t1)
+
+# 2턴: 직전 규칙을 state 에 보존한 채 새 질문
+result2 = graph.invoke({
+    "user_question": "흰쌀밥 먹어도 돼요?",
+    "user_constraints": constraints_after_t1,  # 누적된 규칙 주입
+    ...
+})
+assert "GI" not in result2["final_answer"]  # 회귀 재발 방지
+```
+
+### Known Limitations
+
+`learning_log.md` 에 명시:
+
+1. **False negative**: 암묵적 지시 (`"이거 너무 어려워"` 같은 톤 시그널) 는 추출되지 않습니다. 명시적 지시만 잡습니다.
+2. **False positive**: 일회성 요청 (`"이번엔 표로 정리해줘"`) 을 영구 규칙으로 잘못 분류할 가능성. 프롬프트로 완화했지만 100% 보장하지 않습니다.
+3. **충돌/stale**: 사용자가 시간이 지나며 규칙을 바꾸면 list 가 모순된 항목을 동시에 담을 수 있습니다. resolver 노드는 향후 작업으로 남겨뒀습니다.
+
+### Cost
+
+매 사용자 발화당 Haiku 4.5 호출 1회 (입력 ~150 tok, 출력 ~50 tok) ≈ $0.0001 미만. CLI 시연 빈도에서 무시 가능.
 
 ## Embedding Model Evaluation
 
@@ -340,14 +397,16 @@ LCEL은 직선 파이프라인에 적합한 반면, 라이프사이클·의도�
 | 파일 | 역할 |
 |---|---|
 | `src/lifecycle.py` | `LifecycleStage` enum, `LifecycleMeta` dataclass, 5단계 메타데이터 |
-| `src/agent_state.py` | LangGraph `AgentState` TypedDict (`messages` add reducer + Block 7 GraphRAG 필드) |
-| `src/nodes.py` | classify_intent, food_extraction, graph_lookup, rag, generate_or_fallback, emergency, medical_disclaimer |
-| `src/graph.py` | `build_lifecycle_graph()` factory, conditional edges 정의 |
+| `src/agent_state.py` | LangGraph `AgentState` TypedDict (`messages` + `user_constraints` add reducer + Block 7 GraphRAG 필드) |
+| `src/nodes.py` | classify_intent, **extract_user_constraints**, food_extraction, graph_lookup, rag, generate_or_fallback, emergency, medical_disclaimer |
+| `src/graph.py` | `build_lifecycle_graph()` factory, conditional edges 정의 (Block 8 에서 `extract_constraints` 노드 추가) |
 | `src/graph_db.py` | Neo4j 어댑터 (`WeldaGraphDB` context manager) |
-| `src/graph_fallback.py` | `create_fallback_llm()` (web_search tool 활성화), 응답 파싱 헬퍼 |
+| `src/graph_fallback.py` | `create_fallback_llm()` (web_search tool 활성화), `build_fallback_prompt` (chat_history + user_constraints 주입) |
+| `src/rag_chain.py` | LCEL 체인 + `MEDICAL_DISCLAIMER_PROMPT_TEMPLATE` (`{user_constraints}` placeholder 포함) |
 | `tests/test_lifecycle_graph.py` | intent 분류 + 라우팅 단위 테스트 |
 | `tests/test_graph_db.py` | Neo4j lookup + fallback 헬퍼 + integration 테스트 |
 | `tests/test_graphrag_integration.py` | food_extraction/graph_lookup + 그래프 end-to-end integration |
+| `tests/test_user_constraints.py` | 규칙 추출 단위 5 + 누적·준수 integration 4 (`test_constraints_accumulate_across_turns` 핵심) |
 | `scripts/simulate_block6.py` | 5단계 라이프사이클 시뮬레이션 (감독 출력) |
 | `scripts/init_graph.cypher` / `scripts/normalize_graph.cypher` | Neo4j 도메인 그래프 데이터 |
 
@@ -364,7 +423,7 @@ LCEL은 직선 파이프라인에 적합한 반면, 라이프사이클·의도�
 
 ## Status
 
-개발 진행 중 (Block 7 완료: Neo4j 도메인 그래프 통합, GraphRAG + web_search fallback)
+개발 진행 중 (Block 8 완료: 사용자 발화 규칙 영구화 — `extract_constraints` 노드 + `user_constraints` add reducer + 모든 LLM 프롬프트 최상단 규칙 박스. 시연 회귀(`"앞으로 GI 쓰지마"` 미준수) 재발 방지 테스트 통과.)
 
 ## Disclaimer
 
