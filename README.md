@@ -65,27 +65,84 @@ state dict { question, context, sources, chat_history, user_context, retrieved_d
 
 ### Setup & Run
 
-```bash
-# 1. venv 활성화
-source venv/bin/activate
+처음 셋업이거나 새 머신에서 복구하는 경우 아래 순서를 그대로 따라가십시오.
 
-# 2. 인덱스 빌드 (최초 1회)
+```bash
+# 1. 코드 clone + venv + dependency 설치
+git clone https://github.com/JO-HEEJIN/welda-rag-chatbot-prototype.git
+cd welda-rag-chatbot-prototype
+python3.12 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# 2. .env 파일 생성 (.env.example 참고)
+cp .env.example .env
+# 그 후 ANTHROPIC_API_KEY, LANGSMITH_API_KEY 를 본인 키로 채우십시오.
+# NEO4J_* 변수는 아래 Docker 명령과 일치시키면 그대로 사용 가능합니다.
+```
+
+**필요 환경변수 (`.env`)**
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_pt_...
+LANGSMITH_PROJECT=welda-rag-chatbot
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=weldapassword
+```
+
+```bash
+# 3. Neo4j 컨테이너 띄우기 (APOC 플러그인 포함)
+docker run --name welda-neo4j \
+  -p 7474:7474 -p 7687:7687 \
+  -e NEO4J_AUTH=neo4j/weldapassword \
+  -e NEO4J_PLUGINS='["apoc"]' \
+  -d neo4j:5.20
+
+# 4. 도메인 그래프 데이터 로드 (init + normalize 순서로)
+docker cp scripts/init_graph.cypher welda-neo4j:/tmp/init_graph.cypher && \
+docker cp scripts/normalize_graph.cypher welda-neo4j:/tmp/normalize_graph.cypher && \
+docker exec -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 -e JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8" \
+  welda-neo4j cypher-shell -u neo4j -p weldapassword -f /tmp/init_graph.cypher && \
+docker exec -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 -e JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8" \
+  welda-neo4j cypher-shell -u neo4j -p weldapassword -f /tmp/normalize_graph.cypher
+```
+
+> **UTF-8 locale 변수는 필수입니다.** 빠뜨리면 컨테이너의 POSIX/ASCII locale 위에서 JVM이 한국어 입력을 `U+FFFD` 로 손상시켜 Nutrient 두 개가 같은 name으로 저장되고 관계 카운트가 부풀어 오릅니다. 자세한 진단 과정은 `learning_log.md` 두 번째 항목 참조.
+
+데이터 검증 (선택, 총 43 노드 / 92 관계여야 정상):
+
+```bash
+docker exec -e LANG=C.UTF-8 welda-neo4j cypher-shell -u neo4j -p weldapassword \
+  "MATCH (n) RETURN labels(n)[0] AS label, count(*) AS count ORDER BY label;"
+docker exec -e LANG=C.UTF-8 welda-neo4j cypher-shell -u neo4j -p weldapassword \
+  "MATCH ()-[r]->() RETURN type(r) AS rel, count(*) AS count ORDER BY count DESC;"
+```
+
+```bash
+# 5. Chroma vector index 빌드 (BGE-M3 첫 다운로드 약 2.27GB)
 python scripts/ingest.py
 
-# 3. 챗봇 실행
+# 6. 챗봇 실행
 python scripts/chat.py
 # 사용자 프로필을 설정하시겠습니까? (y/n): y
 # 나이(1-120): 32
 # 성별 (1=male, 2=female, 3=other): 2
 # ...
-# >>> 아침에 흰쌀밥 먹어도 되나요?
-# >>> history     (이전 대화 기록 보기)
-# >>> profile     (현재 프로필 보기)
-# >>> reset       (대화 메모리 초기화)
-# >>> exit        (종료)
+# 현재 어느 단계에 계신가요? (1-5): 2
+# >>> 흰쌀밥 먹어도 돼요?         (graph hit, ~12초)
+# >>> 두쫀쿠 먹어도 돼요?         (graph miss + web_search, ~26초)
+# >>> 어지러워서 의식 잃을 것 같아요  (emergency, 즉시)
+# >>> history / profile / stage / reset / exit
 
-# 4. 테스트
+# 7. 테스트 (Neo4j 컨테이너 실행 중이어야 일부 통과)
 pytest tests/
+# 실제 LLM/web_search 호출까지 포함한 integration 테스트는 비용이 발생하므로
+# 다음과 같이 별도 실행:
+RUN_INTEGRATION=1 pytest tests/ -v
 ```
 
 ## Streaming Response (LangGraph)
