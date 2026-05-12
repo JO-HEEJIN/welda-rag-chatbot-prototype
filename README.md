@@ -8,15 +8,25 @@ LangChain LCEL 기반의 헬스케어 도메인 RAG 챗봇 프로토타입입니
 
 ## Features
 
-- LCEL 기반 RAG 파이프라인
+- LCEL RAG 체인 (retrieval / generation 분리, 단일 retrieval 보장)
+- LangGraph state machine: intent routing + 5단계 라이프사이클
+- Neo4j 도메인 그래프 GraphRAG (multi-hop traversal, 43 노드/92 관계)
+- Anthropic server-side `web_search` fallback (closed-world 한계 보완)
+- 의료 게이트: emergency 즉시 우회 + medical_advice 의료진 권유 강제
 - 사용자 프로필 기반 개인화 (Pydantic 검증)
 - 멀티턴 대화 메모리 (sliding window, max 10턴)
-- 토큰 단위 streaming 응답 출력
+- 토큰 단위 streaming 응답 (`stream_mode=["messages", "values"]`)
 - LangSmith 자동 트레이싱 (단계별 입출력, 토큰 사용량, latency)
-- 한국어 도메인 지식 베이스 (혈당 관리)
-- CLI 데모 (프로필 입력, history/reset/profile 명령 지원)
+- 한국어 도메인 지식 베이스 (혈당 관리 7개 문서, 한국 식단 그래프)
+- CLI 데모 (프로필 입력, lifecycle stage 선택, history/reset/profile/stage 명령)
 
 ## Architecture
+
+전체 시스템은 두 층으로 구성됩니다. **LangGraph state machine 이 바깥 wrapper** 로 의도 분류와 라이프사이클 단계별 분기를 담당하고, **LCEL RAG 체인이 그래프 노드 내부에서 retrieval 도구로 호출**됩니다. Block 7 부터 Neo4j 도메인 그래프와 Anthropic web_search 가 generate 노드에 통합됐습니다.
+
+전체 흐름은 아래 GraphRAG Flow 섹션 다이어그램을 참고하시고, 이 절에서는 RAG 체인 내부와 컴포넌트 선택을 다룹니다.
+
+### LCEL RAG Chain Internals
 
 체인은 `RAGChainComponents`로 retrieval과 generation 두 단계로 분리되어 있습니다. retrieval은 단발 호출(`.invoke()`)에 적합하고 generation은 점진적 출력(`.stream()`)에 적합하다는 차이를 반영한 구조입니다.
 
@@ -38,16 +48,18 @@ state dict { question, context, sources, chat_history, user_context, retrieved_d
 응답 → 대화 메모리에 저장
 ```
 
-`build_rag_chain()`은 retrieval, generation, 그리고 둘을 합친 full 체인을 모두 반환합니다. CLI streaming은 retrieval/generation 분리 호출을, 단순 invoke 사용처(테스트 등)는 full 체인을 사용합니다.
+`build_rag_chain()`은 retrieval, generation, 그리고 둘을 합친 full 체인을 모두 반환합니다. LangGraph 의 `rag` 노드는 retrieval 만 호출해 state 에 context/sources 를 누적시키고, generate 노드(또는 generate_or_fallback)가 그 위에서 LLM 응답을 생성합니다.
 
 ### Component Details
 
-- **Embedding Model**: BAAI/bge-m3 (다국어, 한국어 retrieval에 적합)
+- **Vector Store**: Chroma (local persistent, `chroma_db/`)
+- **Embedding Model**: BAAI/bge-m3 (다국어, 한국어 retrieval 검증됨)
 - **Chunking**: RecursiveCharacterTextSplitter (chunk_size=500, overlap=50)
-- **Vector Store**: Chroma (persistent local storage)
 - **Retrieval**: top-k=3 cosine similarity
-- **LLM**: Claude Sonnet 4.6 via Anthropic API
-- **Orchestration**: LangChain LCEL (pipe operator chains)
+- **Graph DB**: Neo4j 5.20 + APOC, 도메인 그래프 4개 서브그래프 (`docs/graph_schema.md`)
+- **LLM**: Claude Sonnet 4.6 via Anthropic API, fallback LLM 에 server-side `web_search` tool attached
+- **Orchestration**: LangChain LCEL (RAG 체인) + LangGraph (state machine, intent routing)
+- **Memory**: 자체 `ConversationManager` (sliding window, in-memory)
 
 ### Design Decisions
 
@@ -95,7 +107,9 @@ NEO4J_PASSWORD=weldapassword
 ```
 
 ```bash
-# 3. Neo4j 컨테이너 띄우기 (APOC 플러그인 포함)
+# 3. Neo4j 컨테이너 띄우기
+#    APOC 플러그인은 현재 코드에서 직접 호출하지는 않지만, 향후 graph
+#    import/export 와 advanced traversal 확장을 대비해 활성화해 둡니다.
 docker run --name welda-neo4j \
   -p 7474:7474 -p 7687:7687 \
   -e NEO4J_AUTH=neo4j/weldapassword \
@@ -189,27 +203,25 @@ LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 LangGraph state machine이 intent에 따라 분기하고, 식단 의도일 때 Neo4j 도메인 그래프 + Chroma vector RAG + (필요 시) Anthropic web_search 를 결합합니다.
 
 ```
-사용자 입력
-    ↓
-classify_intent (룰 기반 키워드 분류)
-    ↓
-   ┌─────────┬────────────────┬────────────────┬─────────────┐
-   │         │                │                │             │
-emergency  medical_advice  diet_advice     general
-   ↓         ↓                ↓                ↓
-emergency  medical          food_extraction  food_extraction
-   ↓        _disclaimer        ↓                ↓
-  END        ↓               graph_lookup    graph_lookup
-            END                ↓                ↓
-                              rag (Chroma)    rag (Chroma)
-                               ↓                ↓
-                              generate_or_fallback
-                               · graph hit → context-bound 응답
-                               · graph miss → LLM이 web_search 자동 호출
-                               · disclaimer 강제 주입
-                               ↓
-                              END
+                       classify_intent
+                              |
+        +---------------------+-------------------+
+        |                     |                   |
+   emergency      medical_disclaimer       food_extraction
+        |                     |                   |   (diet_advice / general 공통 수렴)
+       END                   END             graph_lookup
+                                                  |
+                                                 rag
+                                                  |
+                                            generate_or_fallback
+                                                  |
+                                                 END
 ```
+
+- `classify_intent` 는 룰 기반 키워드 분류 (emergency > medical > diet > general 우선순위).
+- `diet_advice` 와 `general` intent 는 동일 fan-in 으로 `food_extraction` 에 수렴합니다 (conditional edge 가 두 값 모두 같은 노드를 가리킴).
+- `generate_or_fallback` 내부의 LLM 에는 Anthropic server-side `web_search` tool 이 attach 되어 있어, 그래프/RAG 컨텍스트가 부족하다고 모델이 판단하면 자동으로 web 검색을 호출합니다 (closed-world 한계 보완).
+- 응답에 disclaimer 가 누락되면 코드 레벨에서 강제 주입됩니다.
 
 ### Why GraphRAG
 
@@ -295,9 +307,9 @@ python evaluation/run_eval.py
 
 상세 per-query 결과는 `evaluation/eval_results.json`에서 확인 가능합니다.
 
-## Lifecycle State Machine (LangGraph)
+## Lifecycle State Machine
 
-웰다의 5단계 사용자 라이프사이클을 LangGraph state machine으로 표현합니다. 기존 LCEL RAG 체인은 그대로 두고, 그 위에 LangGraph layer를 얹어 의도(intent) 라우팅과 단계별 응답 차별화를 담당합니다. RAG 체인은 그래프 노드 안에서 호출되는 도구 역할입니다.
+웰다의 5단계 사용자 라이프사이클을 LangGraph state 의 `lifecycle_stage` 필드로 명시적으로 추적합니다. `generate` 노드가 단계 메타데이터를 프롬프트에 주입해 같은 질문이라도 단계에 따라 다른 톤·중점 영역·금지 주제를 반영합니다. 그래프 전체 다이어그램은 위 GraphRAG Flow 섹션을 참고하십시오.
 
 ### Lifecycle Stages
 
@@ -307,29 +319,7 @@ python evaluation/run_eval.py
 4. **FAT_BURN** — 체지방 연소 (대사 유연성 회복 후)
 5. **MAINTENANCE** — 감량 유지 (요요 방지)
 
-각 단계는 `description`, `focus_areas`, `tone_guideline`, `prohibited_topics` 메타데이터를 가지며, 프롬프트에 주입되어 같은 질문이라도 단계에 따라 다른 응답을 만들어냅니다 (`src/lifecycle.py`).
-
-### Graph Flow
-
-```
-사용자 입력
-    ↓
-classify_intent  (rule-based: emergency > medical > diet > general)
-    ↓
-   ┌────────────┬──────────────────┬──────────┬──────────┐
-   │            │                  │          │          │
-emergency   medical_disclaimer    rag        rag        ...
-   │            │                  │          │
-  END           │              generate    generate
-                │                  │          │
-                │                 END        END
-                │
-               END
-```
-
-- **emergency**: RAG 없이 즉시 응급 안내. 119 신고/응급실 이동을 명시.
-- **medical_disclaimer**: RAG로 일반 정보를 찾되 응답 마지막에 의료진 상담 권유 문장을 강제.
-- **diet/general → rag → generate**: 표준 RAG 흐름. `generate` 노드가 라이프사이클 메타데이터를 프롬프트에 주입해 단계별 톤·중점 영역·금지 주제를 반영.
+각 단계는 `description`, `focus_areas`, `tone_guideline`, `prohibited_topics` 메타데이터를 가집니다 (`src/lifecycle.py`).
 
 ### Why LangGraph
 
@@ -337,30 +327,40 @@ LCEL은 직선 파이프라인에 적합한 반면, 라이프사이클·의도�
 
 ### Stage-Aware Response Example
 
-같은 질문 "흰쌀밥 먹어도 돼요?"에 대해 단계별 응답 차이:
+같은 질문 "흰쌀밥 먹어도 돼요?"에 대해 단계별 응답이 달라집니다.
 
 - **UNDERSTANDING**: "지금 당장 식단을 바꾸실 필요는 없습니다. 평소처럼 드시면서 CGM 데이터를 통해 혈당 곡선이 어떻게 그려지는지 살펴보십시오." (관찰·교육 톤)
-- **SPIKE_CONTROL**: 식사 순서, 잡곡 비율, 식후 산책 등 즉시 적용 팁 3가지를 GI 수치와 함께 제시. (실용·구체 톤)
+- **SPIKE_CONTROL**: 식사 순서, 잡곡 비율, 식후 산책 등 즉시 적용 팁 3가지를 GI 수치와 함께 제시. (실용·구체 톤, Block 7 Part 3 실측 응답 기반)
 - **FAT_BURN**: 인슐린 저감 시간, TRE 타이밍, 양/조합/타이밍 표 형식 정리. 기초 설명 생략. (실행·전략 톤)
 
-`prohibited_topics`도 작동합니다. UNDERSTANDING 단계에서는 체지방 감량 압박이나 단식 권유가 응답에 등장하지 않습니다.
+`prohibited_topics` 도 작동합니다. 예를 들어 UNDERSTANDING 단계에서는 체지방 감량 압박이나 단식 권유가 응답에 등장하지 않도록 프롬프트가 차단합니다.
 
-### Files Added in Block 6
+### Source Files
 
-- `src/lifecycle.py` — `LifecycleStage` enum, `LifecycleMeta` dataclass, 5단계 메타데이터
-- `src/agent_state.py` — LangGraph TypedDict (`messages` add reducer 포함)
-- `src/nodes.py` — 5개 노드 함수와 의도 분류 키워드
-- `src/graph.py` — `build_lifecycle_graph()` factory, conditional edges 정의
-- `tests/test_lifecycle_graph.py` — 메타데이터·intent·라우팅 테스트
-- `scripts/simulate_block6.py` — 5단계/응급/의학 시뮬레이션
+| 파일 | 역할 |
+|---|---|
+| `src/lifecycle.py` | `LifecycleStage` enum, `LifecycleMeta` dataclass, 5단계 메타데이터 |
+| `src/agent_state.py` | LangGraph `AgentState` TypedDict (`messages` add reducer + Block 7 GraphRAG 필드) |
+| `src/nodes.py` | classify_intent, food_extraction, graph_lookup, rag, generate_or_fallback, emergency, medical_disclaimer |
+| `src/graph.py` | `build_lifecycle_graph()` factory, conditional edges 정의 |
+| `src/graph_db.py` | Neo4j 어댑터 (`WeldaGraphDB` context manager) |
+| `src/graph_fallback.py` | `create_fallback_llm()` (web_search tool 활성화), 응답 파싱 헬퍼 |
+| `tests/test_lifecycle_graph.py` | intent 분류 + 라우팅 단위 테스트 |
+| `tests/test_graph_db.py` | Neo4j lookup + fallback 헬퍼 + integration 테스트 |
+| `tests/test_graphrag_integration.py` | food_extraction/graph_lookup + 그래프 end-to-end integration |
+| `scripts/simulate_block6.py` | 5단계 라이프사이클 시뮬레이션 (감독 출력) |
+| `scripts/init_graph.cypher` / `scripts/normalize_graph.cypher` | Neo4j 도메인 그래프 데이터 |
 
 ## Tech Stack
 
-- LangChain (LCEL)
-- LangGraph (state machine, lifecycle routing)
-- Anthropic Claude (Sonnet 4.6)
-- Chroma (vector store)
-- BGE-M3 (다국어 임베딩, KURE-v1과 비교 평가 후 채택)
+- LangChain LCEL (retrieval / generation 체인)
+- LangGraph (state machine, intent routing, 라이프사이클 단계)
+- Anthropic Claude Sonnet 4.6 (Chat + server-side `web_search` tool)
+- Chroma (local persistent vector store)
+- BGE-M3 (다국어 임베딩, KURE-v1 비교 평가 후 채택 — 동률 + 다국어 확장성)
+- Neo4j 5.20 (도메인 그래프, 43 노드 / 92 관계)
+- LangSmith (자동 트레이싱)
+- Pydantic v2 (사용자 프로필 검증)
 
 ## Status
 
