@@ -1,29 +1,36 @@
 """Build the LangGraph state machine that combines intent routing + GraphRAG.
 
-Graph layout (Block 8):
+Graph layout (Block 8, with emergency bypass):
 
-                       classify_intent
+                       classify_intent  (rule-based)
                               |
-                     extract_constraints   (Haiku 4.5, appends to user_constraints)
+              +---------------+----------------+
+              |                                |
+         (emergency)                     (others)
+              |                                |
+              |                       extract_constraints   (Haiku 4.5)
+              |                                |
+              |             +------------------+------------------+
+              |             |                  |                  |
+              |     medical_disclaimer   food_extraction (diet_advice/general 공통)
+              |             |                  |
+              |            END           graph_lookup
+              |                                |
+              |                               rag
+              |                                |
+              |                       generate_or_fallback
+              |                                |
+              +---------> emergency           END
                               |
-        +---------------------+-------------------+
-        |                     |                   |
-   emergency      medical_disclaimer       food_extraction
-        |                     |                   |   (diet_advice / general 공통 수렴)
-       END                   END             graph_lookup
-                                                  |
-                                                 rag
-                                                  |
-                                            generate_or_fallback
-                                                  |
-                                                 END
+                             END
 
-``classify_intent`` (rule-based) always passes through ``extract_constraints``
-before the conditional fan-out. The extractor pulls user-stated standing rules
-("앞으로 X 쓰지마") off the latest utterance and the add-reducer on
-``AgentState.user_constraints`` accumulates them across turns. Every downstream
-LLM prompt renders the accumulated list at the top of its instructions so the
-model can't quietly drop a rule between turns.
+Emergency intent bypasses ``extract_constraints`` so an in-crisis user gets
+the 119/응급실 안내instantly (~0.003 s, no LLM call). Every other intent
+flows through ``extract_constraints`` first: the extractor pulls user-stated
+standing rules ("앞으로 X 쓰지마") off the latest utterance and the
+add-reducer on ``AgentState.user_constraints`` accumulates them across turns.
+Every downstream LLM prompt renders the accumulated list at the top of its
+instructions so the model can't quietly drop a rule between turns.
 
 The diet_advice and general intents share the same retrieval + GraphRAG fan-in.
 The fallback LLM inside ``generate_or_fallback_node`` has Anthropic's
@@ -85,12 +92,20 @@ def build_lifecycle_graph(
     )
 
     workflow.set_entry_point("classify_intent")
-    workflow.add_edge("classify_intent", "extract_constraints")
+    # Emergency bypasses extract_constraints — an in-crisis user must hit
+    # the 119/응급실 안내 instantly, with no LLM-extractor overhead in front.
+    workflow.add_conditional_edges(
+        "classify_intent",
+        lambda state: "emergency" if state["intent"] == "emergency" else "extract_constraints",
+        {
+            "emergency": "emergency",
+            "extract_constraints": "extract_constraints",
+        },
+    )
     workflow.add_conditional_edges(
         "extract_constraints",
         lambda state: state["intent"],
         {
-            "emergency": "emergency",
             "medical_advice": "medical_disclaimer",
             "diet_advice": "food_extraction",
             "general": "food_extraction",

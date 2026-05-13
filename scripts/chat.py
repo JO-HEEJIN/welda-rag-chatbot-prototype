@@ -302,8 +302,17 @@ def main() -> None:
     stage = ask_lifecycle_stage()
     print(f"\n[단계 저장됨] {LIFECYCLE_METADATA[stage].description}\n")
 
-    vectorstore = load_vector_store(str(persist_dir))
-    graph = build_lifecycle_graph(vectorstore, user_profile=profile)
+    # First-launch setup is dominated by the BGE-M3 embedding load (~2.27 GB
+    # into RAM). Spin the cursor while we wait so the user sees progress
+    # instead of a silent ~5-10 s gap before the prompt appears.
+    setup_spinner = Spinner(label="임베딩 모델 로드 중")
+    setup_spinner.start()
+    try:
+        vectorstore = load_vector_store(str(persist_dir))
+        setup_spinner.set_label("그래프 초기화 중")
+        graph = build_lifecycle_graph(vectorstore, user_profile=profile)
+    finally:
+        setup_spinner.stop()
     memory = ConversationManager(max_turns=10)
 
     print()

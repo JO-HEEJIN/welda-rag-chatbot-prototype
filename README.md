@@ -206,23 +206,30 @@ LangGraph state machine이 intent에 따라 분기하고, 식단 의도일 때 N
 ```
                        classify_intent  (rule-based)
                               |
-                     extract_constraints  (Haiku 4.5, append to state["user_constraints"])
+              +---------------+----------------+
+              |                                |
+         (emergency)                     (others)
+              |                                |
+              |                       extract_constraints  (Haiku 4.5)
+              |                                |
+              |             +------------------+------------------+
+              |             |                  |                  |
+              |     medical_disclaimer   food_extraction (diet_advice/general 공통)
+              |             |                  |
+              |            END           graph_lookup
+              |                                |
+              |                               rag
+              |                                |
+              |                       generate_or_fallback
+              |                                |
+              +---------> emergency           END
                               |
-        +---------------------+-------------------+
-        |                     |                   |
-   emergency      medical_disclaimer       food_extraction
-        |                     |                   |   (diet_advice / general 공통 수렴)
-       END                   END             graph_lookup
-                                                  |
-                                                 rag
-                                                  |
-                                            generate_or_fallback
-                                                  |
-                                                 END
+                             END
 ```
 
 - `classify_intent` 는 룰 기반 키워드 분류 (emergency > medical > diet > general 우선순위).
-- `extract_constraints` 는 매 사용자 발화에서 명시적 표준 규칙 (`"앞으로 X 쓰지마"` 등) 만 추출해 `state["user_constraints"]` 에 누적합니다. AgentState 의 `add` reducer 가 턴 간 누적을 보장하고, 모든 하위 LLM 프롬프트(`medical_disclaimer`, `generate_or_fallback`) 최상단에 `[사용자가 명시한 규칙 — 반드시 따르세요]` 섹션으로 렌더링됩니다.
+- **Emergency 는 `extract_constraints` 를 우회**합니다. 위기에 처한 사용자가 LLM 추출기 한 번을 기다리게 두지 않습니다 — 119/응급실 안내가 ~1 ms 안에 나옵니다 (Haiku 호출 0회).
+- 나머지 intent 는 `extract_constraints` 를 거칩니다. 이 노드는 매 사용자 발화에서 명시적 표준 규칙 (`"앞으로 X 쓰지마"` 등) 만 추출해 `state["user_constraints"]` 에 누적합니다. AgentState 의 `add` reducer 가 턴 간 누적을 보장하고, 모든 하위 LLM 프롬프트(`medical_disclaimer`, `generate_or_fallback`) 최상단에 `[사용자가 명시한 규칙 — 반드시 따르세요]` 섹션으로 렌더링됩니다.
 - `diet_advice` 와 `general` intent 는 동일 fan-in 으로 `food_extraction` 에 수렴합니다 (conditional edge 가 두 값 모두 같은 노드를 가리킴).
 - `generate_or_fallback` 내부의 LLM 에는 Anthropic server-side `web_search` tool 이 attach 되어 있어, 그래프/RAG 컨텍스트가 부족하다고 모델이 판단하면 자동으로 web 검색을 호출합니다 (closed-world 한계 보완).
 - 응답에 disclaimer 가 누락되면 코드 레벨에서 강제 주입됩니다.
@@ -237,10 +244,10 @@ LangGraph state machine이 intent에 따라 분기하고, 식단 의도일 때 N
 
 | 시나리오 | 경로 | 측정 wall time |
 |---|---|---|
-| emergency | classify → emergency → END | 0.003s |
-| diet_advice + graph hit | classify → food_ext → graph_lookup → rag → generate | ~12s |
+| emergency | classify → emergency → END (extract_constraints 우회) | ~0.002s |
+| diet_advice + graph hit | classify → extract_constraints → food_ext → graph_lookup → rag → generate | ~12s |
 | diet_advice + graph miss (web_search) | 위 흐름 + web_search 호출 | ~26s |
-| medical_advice | classify → medical_disclaimer | ~7s |
+| medical_advice | classify → extract_constraints → medical_disclaimer | ~7s |
 
 응답에 자동 출처 표시:
 - 그래프 hit: `graph:food:white_rice` 같은 식별자
@@ -264,6 +271,10 @@ LangGraph state machine이 intent에 따라 분기하고, 식단 의도일 때 N
 1. `extract_user_constraints_node` (`src/nodes.py`): Haiku 4.5 structured output 으로 사용자 발화에서 **표준 규칙만** 추출 (`"앞으로 X 하지마"`, `"항상 Y 형식으로"` 등). 일회성 요청 (`"이번엔 표로"`) 은 제외하도록 프롬프트로 지시.
 2. `AgentState.user_constraints: Annotated[list[str], add]`: LangGraph `add` reducer 가 턴 간 누적을 자동 처리. 노드는 *추가* 만 반환하고 누적 책임은 framework 가 짐.
 3. 모든 LLM 프롬프트(`MEDICAL_DISCLAIMER_PROMPT_TEMPLATE`, fallback prompt) 최상단에 `[사용자가 명시한 규칙 — 반드시 따르세요]` 섹션과 강조 instruction `"사용자가 한 번이라도 'X 쓰지마' 라고 했으면 X 를 다시 쓰지 마세요"` 박힘.
+
+### Emergency Bypass (Block 8 후속 fix)
+
+초기 Block 8 도식에서는 `extract_constraints` 가 `classify_intent` 직후 모든 intent 앞에 박혀 있었습니다. 시연 중 emergency latency 가 ~0.003 s 에서 LLM 추출 호출 한 번만큼 (~0.5 s) 늘어난 회귀가 확인되어, `classify_intent` 에서 emergency 인 경우 `extract_constraints` 를 우회하도록 conditional edge 를 추가했습니다. 위기 상황에서 LLM 한 번 더 기다리는 비용은 다른 어떤 추상화의 이득보다 큽니다. 우회 후 emergency wall time 은 직접 측정으로 ~1.5 ms 입니다.
 
 ### Why an LLM extractor (not regex)
 
